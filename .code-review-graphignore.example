@@ -1,0 +1,161 @@
+# .code-review-graphignore
+# ========================
+# Copy this file to your project root as `.code-review-graphignore` to exclude
+# files and directories from the code-review-graph index. This speeds up graph
+# builds by skipping dependencies, caches, build artifacts, and generated code.
+#
+# Syntax: glob patterns (same as .gitignore). One pattern per line.
+# Lines starting with # are comments. Blank lines are ignored.
+#
+# Usage:
+#   cp .code-review-graphignore.example .code-review-graphignore
+#
+# Each section below covers a common category. Uncomment or extend patterns
+# as needed for your project.
+
+# =============================================================================
+# 1. VERSION CONTROL
+# =============================================================================
+.git/**
+.gitignore
+.gitattributes
+
+# =============================================================================
+# 2. PHP DEPENDENCIES & COMPOSER
+# =============================================================================
+vendor/**
+composer.lock
+composer.phar
+
+# =============================================================================
+# 3. NODE / JAVASCRIPT DEPENDENCIES
+# =============================================================================
+node_modules/**
+.bundle/**
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+.bun.lock
+.bun.lockb
+
+# =============================================================================
+# 4. APPLICATION CACHE & STORAGE (Laravel / Symfony / generic PHP)
+# =============================================================================
+var/cache/**
+var/log/**
+var/session/**
+var/tmp/**
+var/view/**
+bootstrap/cache/**
+storage/framework/cache/**
+storage/framework/sessions/**
+storage/framework/views/**
+storage/logs/**
+storage/debugbar/**
+
+# =============================================================================
+# 5. BUILD & COMPILED OUTPUT
+# =============================================================================
+build/**
+dist/**
+.bundle/**
+public/build/**
+public/hot
+public/storage/**
+public/assets/vendor/**
+public/vendor/**
+
+# =============================================================================
+# 6. MINIFIED / BUNDLED ASSETS
+# =============================================================================
+*.min.js
+*.min.css
+*.bundle.js
+*.chunk.js
+*.chunk.css
+
+# =============================================================================
+# 7. GENERATED FILES
+# =============================================================================
+*.generated.php
+*.generated.js
+*.generated.css
+*.generated.ts
+*_generated.php
+ide-helper.php
+_ide_helper.php
+_ide_helper_*.php
+
+# =============================================================================
+# 8. DATABASE / SQL
+# =============================================================================
+*.sql
+*.sqlite
+*.db
+*.db3
+
+# =============================================================================
+# 9. CACHE & TEMP FILES (OS / editor)
+# =============================================================================
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+*.bak
+*.orig
+.php_cs.cache
+.phpunit.result.cache
+.temp
+
+# =============================================================================
+# 10. LARGE STATIC ASSETS (images, videos, binaries)
+# =============================================================================
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.ico
+*.webp
+*.avif
+*.svg
+*.woff
+*.woff2
+*.ttf
+*.eot
+*.mp4
+*.avi
+*.mov
+*.zip
+*.tar
+*.gz
+*.pdf
+
+# =============================================================================
+# 11. ENVIRONMENT & CONFIGURATION FILES
+# =============================================================================
+.env
+.env.*
+*.local
+
+# =============================================================================
+# 12. PHP-SPECIFIC ARTIFACTS
+# =============================================================================
+.phpunit/
+.php_cs/
+coverage/**
+reports/**
+.php_cs
+.php_cs.dist.php
+.php-cs-fixer.cache
+
+# =============================================================================
+# 13. TERRAFORM / IaC
+# =============================================================================
+.terraform/**
+*.tfstate
+*.tfstate.backup
+
+# =============================================================================
+# 14. ADD YOUR PROJECT-SPECIFIC PATTERNS BELOW
+# =============================================================================
