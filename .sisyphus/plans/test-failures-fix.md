@@ -723,7 +723,7 @@ Wave FINAL:
 
 ## Final Verification Wave
 
-- [ ] F1. **Full Suite Regression Verification**
+- [x] F1. **Full Suite Regression Verification**
 
   **What to do**:
   1. Run the full pytest suite: `pytest -q 2>&1`
