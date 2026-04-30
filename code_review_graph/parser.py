@@ -172,7 +172,8 @@ _CLASS_TYPES: dict[str, list[str]] = {
     "elixir": [],
     "zig": ["container_declaration"],
     "powershell": ["class_statement"],
-    "julia": ["struct_definition", "abstract_definition"],
+    "julia": ["struct_definition", "abstract_definition", "module_definition", "enum_definition"],
+    "gdscript": ["class_definition", "class_name_statement"],
 }
 
 _FUNCTION_TYPES: dict[str, list[str]] = {
@@ -221,8 +222,10 @@ _FUNCTION_TYPES: dict[str, list[str]] = {
     "powershell": ["function_statement"],
     "julia": [
         "function_definition",
-        "short_function_definition",
+        "assignment",
+        "macro_definition",
     ],
+    "gdscript": ["function_definition"],
 }
 
 _IMPORT_TYPES: dict[str, list[str]] = {
@@ -263,6 +266,7 @@ _IMPORT_TYPES: dict[str, list[str]] = {
     "powershell": [],
     # Julia: import/using are import_statement nodes.
     "julia": ["import_statement", "using_statement"],
+    "gdscript": ["extends_statement"],
 }
 
 _CALL_TYPES: dict[str, list[str]] = {
@@ -284,7 +288,10 @@ _CALL_TYPES: dict[str, list[str]] = {
     ],
     "kotlin": ["call_expression"],
     "swift": ["call_expression"],
-    "php": ["function_call_expression", "member_call_expression"],
+    "php": [
+        "function_call_expression", "member_call_expression",
+        "nullsafe_member_call_expression", "scoped_call_expression",
+    ],
     "scala": ["call_expression", "instance_expression", "generic_function"],
     "solidity": ["call_expression"],
     "lua": ["function_call"],
@@ -301,6 +308,7 @@ _CALL_TYPES: dict[str, list[str]] = {
     "zig": ["call_expression", "builtin_call_expr"],
     "powershell": ["command_expression"],
     "julia": ["call_expression"],
+    "gdscript": ["call", "attribute_call"],
 }
 
 # Patterns that indicate a test function
@@ -761,7 +769,56 @@ class CodeParser:
         return self._parsers[language]
 
     def detect_language(self, path: Path) -> Optional[str]:
-        return EXTENSION_TO_LANGUAGE.get(path.suffix.lower())
+        ext = path.suffix.lower()
+        if ext in EXTENSION_TO_LANGUAGE:
+            return EXTENSION_TO_LANGUAGE[ext]
+
+        if not path.exists():
+            return None
+
+        try:
+            first_line = path.read_bytes().split(b"\n", 1)[0]
+        except (OSError, PermissionError):
+            return None
+
+        if not first_line.startswith(b"#!"):
+            return None
+
+        try:
+            shebang = first_line.decode("utf-8", errors="replace").strip()
+        except (UnicodeDecodeError, AttributeError):
+            return None
+
+        cmd = shebang[2:].strip()
+        parts = cmd.split()
+        if not parts:
+            return None
+
+        if parts[0].endswith("env"):
+            idx = 1
+            if idx < len(parts) and parts[idx] == "-S":
+                idx += 1
+            if idx < len(parts):
+                interpreter = parts[idx]
+            else:
+                return None
+        else:
+            interpreter = parts[0]
+
+        interpreter_name = Path(interpreter).name
+
+        mapping = {
+            "bash": "bash",
+            "sh": "bash",
+            "python": "python",
+            "python2": "python",
+            "python3": "python",
+            "node": "javascript",
+            "ruby": "ruby",
+            "perl": "perl",
+        }
+
+        return mapping.get(interpreter_name)
 
     def parse_file(self, path: Path) -> tuple[list[NodeInfo], list[EdgeInfo]]:
         """Parse a single file and return extracted nodes and edges."""
@@ -795,7 +852,7 @@ class CodeParser:
 
         # Databricks .py notebook exports
         if language == "python" and source.startswith(
-            b"# Databricks notebook source\n",
+            (b"# Databricks notebook source\n", b"# Databricks notebook source\r\n"),
         ):
             return self._parse_databricks_py_notebook(path, source)
 
@@ -1321,7 +1378,7 @@ class CodeParser:
         text = source.decode("utf-8", errors="replace")
 
         # Strip the header line
-        lines = text.split("\n")
+        lines = text.splitlines()
         if lines and lines[0].strip() == "# Databricks notebook source":
             lines = lines[1:]
 
@@ -1918,6 +1975,15 @@ class CodeParser:
                 ):
                     continue
 
+            # --- Julia-specific constructs ---
+            if language == "julia":
+                if self._extract_julia_constructs(
+                    child, node_type, source, language, file_path, nodes, edges,
+                    enclosing_class, enclosing_func,
+                    import_map, defined_names, _depth,
+                ):
+                    continue
+
             # --- Dart call detection (see #87) ---
             # tree-sitter-dart does not wrap calls in a single
             # ``call_expression`` node; instead the pattern is
@@ -1965,7 +2031,7 @@ class CodeParser:
             # --- Functions ---
             if node_type in func_types and self._extract_functions(
                 child, source, language, file_path, nodes, edges,
-                enclosing_class, import_map, defined_names,
+                enclosing_class, enclosing_func, import_map, defined_names,
                 _depth,
             ):
                 continue
@@ -2218,24 +2284,24 @@ class CodeParser:
         # ---- Everything else = a regular function/method call ----------
         # Emit a CALLS edge when we're inside a function (same rule as
         # the generic _extract_calls path).
-        if enclosing_func:
-            # For dotted calls like `IO.puts(msg)`, prefer the dotted
-            # identifier; for bare calls use the first identifier.
-            call_name = ident
-            caller = self._qualify(
-                enclosing_func, file_path, enclosing_class,
-            )
-            target = self._resolve_call_target(
-                call_name, file_path, language,
-                import_map or {}, defined_names or set(),
-            )
-            edges.append(EdgeInfo(
-                kind=EdgeKind.CALLS,
-                source=caller,
-                target=target,
-                file_path=file_path,
-                line=node.start_point[0] + 1,
-            ))
+        # For dotted calls like `IO.puts(msg)`, prefer the dotted
+        # identifier; for bare calls use the first identifier.
+        call_name = ident
+        caller = (
+            self._qualify(enclosing_func, file_path, enclosing_class)
+            if enclosing_func else file_path
+        )
+        target = self._resolve_call_target(
+            call_name, file_path, language,
+            import_map or {}, defined_names or set(),
+        )
+        edges.append(EdgeInfo(
+            kind="CALLS",
+            source=caller,
+            target=target,
+            file_path=file_path,
+            line=node.start_point[0] + 1,
+        ))
         # Recurse into arguments + do_block so nested calls are caught.
         for sub in node.children:
             if sub.type in ("arguments", "do_block"):
@@ -2247,6 +2313,181 @@ class CodeParser:
                     _depth=_depth + 1,
                 )
         return True
+
+    def _extract_julia_constructs(
+        self,
+        node,
+        node_type: str,
+        source: bytes,
+        language: str,
+        file_path: str,
+        nodes: list[NodeInfo],
+        edges: list[EdgeInfo],
+        enclosing_class: Optional[str],
+        enclosing_func: Optional[str],
+        import_map: Optional[dict[str, str]],
+        defined_names: Optional[set[str]],
+        _depth: int,
+    ) -> bool:
+        """Handle Julia-specific constructs: macrocalls, exports, includes."""
+        if language != "julia":
+            return False
+
+        # @enum → Class + enum variants
+        if node_type == "macrocall_expression":
+            macro_name = None
+            for child in node.children:
+                if child.type == "macro_identifier":
+                    for sub in child.children:
+                        if sub.type == "identifier":
+                            macro_name = sub.text.decode("utf-8", errors="replace")
+                            break
+            if macro_name == "enum":
+                args = []
+                for child in node.children:
+                    if child.type == "macro_argument_list":
+                        for sub in child.children:
+                            if sub.type == "identifier":
+                                args.append(sub.text.decode("utf-8", errors="replace"))
+                if args:
+                    enum_name = args[0]
+                    qualified = self._qualify(enum_name, file_path, enclosing_class)
+                    nodes.append(NodeInfo(
+                        kind="Class",
+                        name=enum_name,
+                        file_path=file_path,
+                        line_start=node.start_point[0] + 1,
+                        line_end=node.end_point[0] + 1,
+                        language=language,
+                        parent_name=enclosing_class,
+                        extra={"julia_kind": "enum"},
+                    ))
+                    container = (
+                        self._qualify(enclosing_class, file_path, None)
+                        if enclosing_class else file_path
+                    )
+                    edges.append(EdgeInfo(
+                        kind="CONTAINS",
+                        source=container,
+                        target=qualified,
+                        file_path=file_path,
+                        line=node.start_point[0] + 1,
+                    ))
+                    for variant in args[1:]:
+                        v_qualified = self._qualify(variant, file_path, enclosing_class)
+                        nodes.append(NodeInfo(
+                            kind="Function",
+                            name=variant,
+                            file_path=file_path,
+                            line_start=node.start_point[0] + 1,
+                            line_end=node.end_point[0] + 1,
+                            language=language,
+                            parent_name=enclosing_class,
+                            extra={"julia_kind": "enum_variant"},
+                        ))
+                        edges.append(EdgeInfo(
+                            kind="CONTAINS",
+                            source=qualified,
+                            target=v_qualified,
+                            file_path=file_path,
+                            line=node.start_point[0] + 1,
+                        ))
+                return True
+
+            # @testset → Test node
+            if macro_name == "testset":
+                test_name = None
+                for child in node.children:
+                    if child.type == "macro_argument_list":
+                        for sub in child.children:
+                            if sub.type == "string_literal":
+                                test_name = sub.text.decode("utf-8", errors="replace").strip('"')
+                                break
+                if test_name is None:
+                    test_name = macro_name
+                qualified = self._qualify(test_name, file_path, enclosing_class)
+                nodes.append(NodeInfo(
+                    kind="Test",
+                    name=test_name,
+                    file_path=file_path,
+                    line_start=node.start_point[0] + 1,
+                    line_end=node.end_point[0] + 1,
+                    language=language,
+                    parent_name=enclosing_class,
+                ))
+                container = (
+                    self._qualify(enclosing_class, file_path, None)
+                    if enclosing_class else file_path
+                )
+                edges.append(EdgeInfo(
+                    kind="CONTAINS",
+                    source=container,
+                    target=qualified,
+                    file_path=file_path,
+                    line=node.start_point[0] + 1,
+                ))
+                # Recurse into macro body
+                for child in node.children:
+                    if child.type == "macro_argument_list":
+                        self._extract_from_tree(
+                            child, source, language, file_path, nodes, edges,
+                            enclosing_class=enclosing_class,
+                            enclosing_func=enclosing_func,
+                            import_map=import_map, defined_names=defined_names,
+                            _depth=_depth + 1,
+                        )
+                return True
+
+        # export / public statements
+        if node_type in ("export_statement", "public_statement"):
+            extra_key = "julia_export" if node_type == "export_statement" else "julia_public"
+            for child in node.children:
+                if child.type == "identifier":
+                    name = child.text.decode("utf-8", errors="replace")
+                    target = self._resolve_call_target(
+                        name, file_path, language,
+                        import_map or {}, defined_names or set(),
+                    )
+                    source = (
+                        self._qualify(enclosing_class, file_path, None)
+                        if enclosing_class else file_path
+                    )
+                    edges.append(EdgeInfo(
+                        kind="REFERENCES",
+                        source=source,
+                        target=target,
+                        file_path=file_path,
+                        line=node.start_point[0] + 1,
+                        extra={extra_key: True},
+                    ))
+            return True
+
+        # include("file.jl") → IMPORTS_FROM
+        if node_type == "call_expression":
+            callee = None
+            for child in node.children:
+                if child.type == "identifier":
+                    callee = child.text.decode("utf-8", errors="replace")
+                    break
+            if callee == "include":
+                target = None
+                for child in node.children:
+                    if child.type == "argument_list":
+                        for sub in child.children:
+                            if sub.type == "string_literal":
+                                target = sub.text.decode("utf-8", errors="replace").strip('"')
+                                break
+                if target:
+                    edges.append(EdgeInfo(
+                        kind="IMPORTS_FROM",
+                        source=file_path,
+                        target=target,
+                        file_path=file_path,
+                        line=node.start_point[0] + 1,
+                    ))
+                return True
+
+        return False
 
     def _extract_bash_source_command(
         self,
@@ -2960,6 +3201,7 @@ class CodeParser:
         nodes: list[NodeInfo],
         edges: list[EdgeInfo],
         enclosing_class: Optional[str],
+        enclosing_func: Optional[str],
         import_map: Optional[dict[str, str]],
         defined_names: Optional[set[str]],
         _depth: int,
@@ -3009,6 +3251,27 @@ class CodeParser:
         is_test = _is_test_function(name, file_path, decorators)
         kind = "Test" if is_test else "Function"
         qualified = self._qualify(name, file_path, enclosing_class)
+        # Julia: qualified function names like Base.show emit a REFERENCES edge
+        if language == "julia" and child.type in ("function_definition", "macro_definition"):
+            for sub in child.children:
+                if sub.type == "signature":
+                    for sub2 in sub.children:
+                        if sub2.type == "call_expression":
+                            first = sub2.children[0] if sub2.children else None
+                            if first and first.type == "field_expression":
+                                for sub3 in first.children:
+                                    if sub3.type == "identifier":
+                                        base_name = sub3.text.decode("utf-8", errors="replace")
+                                        edges.append(EdgeInfo(
+                                            kind="REFERENCES",
+                                            source=qualified,
+                                            target=base_name,
+                                            file_path=file_path,
+                                            line=child.start_point[0] + 1,
+                                        ))
+                                        break
+                                break
+                    break
         params = self._get_params(child, language, source)
         ret_type = self._get_return_type(child, language, source)
 
@@ -3027,11 +3290,15 @@ class CodeParser:
         nodes.append(node)
 
         # CONTAINS edge
-        container = (
-            self._qualify(enclosing_class, file_path, None)
-            if enclosing_class
-            else file_path
-        )
+        if language == "julia" and enclosing_func:
+            container = self._qualify(enclosing_func, file_path, enclosing_class)
+            qualified = f"{container}.{name}"
+        else:
+            container = (
+                self._qualify(enclosing_class, file_path, None)
+                if enclosing_class
+                else file_path
+            )
         edges.append(EdgeInfo(
             kind=EdgeKind.CONTAINS,
             source=container,
@@ -3215,9 +3482,10 @@ class CodeParser:
             )
             return True
 
-        if call_name and enclosing_func:
-            caller = self._qualify(
-                enclosing_func, file_path, enclosing_class,
+        if call_name:
+            caller = (
+                self._qualify(enclosing_func, file_path, enclosing_class)
+                if enclosing_func else file_path
             )
             target = self._resolve_call_target(
                 call_name, file_path, language,
@@ -3261,16 +3529,16 @@ class CodeParser:
         edges so caller/impact queries can cross the JSX boundary. Intrinsic DOM
         tags (``<div>``) are ignored.
         """
-        if not enclosing_func:
-            return
-
         target = self._resolve_jsx_component_target(
             child, language, file_path, import_map or {}, defined_names or set(),
         )
         if not target:
             return
 
-        caller = self._qualify(enclosing_func, file_path, enclosing_class)
+        caller = (
+            self._qualify(enclosing_func, file_path, enclosing_class)
+            if enclosing_func else file_path
+        )
         edges.append(EdgeInfo(
             kind=EdgeKind.CALLS,
             source=caller,
@@ -3982,6 +4250,32 @@ class CodeParser:
             # ``dart:core`` / ``dart:async`` etc. are SDK libraries we do
             # not track; fall through to return None.
 
+        elif language in ("java", "kotlin", "csharp"):
+            if module.endswith(".*"):
+                return None
+            ext = ".java" if language == "java" else ".kt" if language == "kotlin" else ".cs"
+            # For static imports (e.g. com.example.util.Helper.MAX) the last
+            # segment is a member, not a class. Try the full path first, then
+            # drop the last segment.
+            parts = module.split(".")
+            candidates = ["/".join(parts) + ext]
+            if len(parts) > 1:
+                candidates.append("/".join(parts[:-1]) + ext)
+            current = caller_dir
+            while True:
+                for prefix in ("", "src/main/java", "src/test/java"):
+                    for candidate in candidates:
+                        if prefix:
+                            target = current / prefix / candidate
+                        else:
+                            target = current / candidate
+                        if target.is_file():
+                            return str(target.resolve())
+                if current == current.parent:
+                    break
+                current = current.parent
+            return None
+
         return None
 
     def _find_dart_pubspec_root(
@@ -4297,6 +4591,62 @@ class CodeParser:
                     for sub in child.children:
                         if sub.type == "type_identifier":
                             return sub.text.decode("utf-8", errors="replace")
+        if language == "gdscript" and node.type in (
+            "class_definition", "class_name_statement", "function_definition",
+        ):
+            for child in node.children:
+                if child.type == "name":
+                    return child.text.decode("utf-8", errors="replace")
+            return None
+        # Java methods: tree-sitter-java puts type_identifier (return type)
+        # before identifier (method name). Skip return types and grab the
+        # actual method name.
+        if language == "java" and node.type == "method_declaration":
+            for child in node.children:
+                if child.type in ("type_identifier", "void_type"):
+                    continue
+                if child.type == "identifier":
+                    return child.text.decode("utf-8", errors="replace")
+            return None
+        # Julia: deeply nested AST structures for names
+        if language == "julia":
+            if node.type == "module_definition":
+                for child in node.children:
+                    if child.type == "identifier":
+                        return child.text.decode("utf-8", errors="replace")
+            if node.type in ("struct_definition", "abstract_definition"):
+                for child in node.children:
+                    if child.type == "type_head":
+                        for sub in child.children:
+                            if sub.type == "identifier":
+                                return sub.text.decode("utf-8", errors="replace")
+                            if sub.type == "binary_expression":
+                                for sub2 in sub.children:
+                                    if sub2.type == "identifier":
+                                        return sub2.text.decode("utf-8", errors="replace")
+            if node.type in ("function_definition", "macro_definition"):
+                for child in node.children:
+                    if child.type == "signature":
+                        return self._get_name(child, language, kind)
+            if node.type == "signature":
+                for child in node.children:
+                    if child.type == "call_expression":
+                        return self._get_name(child, language, kind)
+                return None
+            if node.type == "assignment":
+                first = node.children[0] if node.children else None
+                if first and first.type == "call_expression":
+                    return self._get_name(first, language, kind)
+                return None
+            if node.type == "call_expression":
+                first = node.children[0] if node.children else None
+                if first and first.type == "field_expression":
+                    for sub in reversed(first.children):
+                        if sub.type == "identifier":
+                            return sub.text.decode("utf-8", errors="replace")
+                for child in node.children:
+                    if child.type == "identifier":
+                        return child.text.decode("utf-8", errors="replace")
         # Most languages use a 'name' child
         for child in node.children:
             if child.type in (
@@ -4383,15 +4733,21 @@ class CodeParser:
                         if arg.type in ("identifier", "attribute"):
                             bases.append(arg.text.decode("utf-8", errors="replace"))
         elif language in ("java", "csharp", "kotlin"):
-            # Look for superclass/interfaces in extends/implements clauses
             for child in node.children:
                 if child.type in (
                     "superclass", "super_interfaces", "extends_type",
-                    "implements_type", "type_identifier", "supertype",
-                    "delegation_specifier",
+                    "implements_type", "supertype", "delegation_specifier",
                 ):
-                    text = child.text.decode("utf-8", errors="replace")
-                    bases.append(text)
+                    # Extract bare type identifiers instead of full node text
+                    def _collect_type_ids(n):
+                        for sub in n.children:
+                            if sub.type == "type_identifier":
+                                bases.append(
+                                    sub.text.decode("utf-8", errors="replace")
+                                )
+                            elif sub.type == "type_list":
+                                _collect_type_ids(sub)
+                    _collect_type_ids(child)
         elif language == "scala":
             for child in node.children:
                 if child.type == "extends_clause":
@@ -4468,6 +4824,29 @@ class CodeParser:
                                     bases.append(
                                         ident.text.decode("utf-8", errors="replace")
                                     )
+                                    break
+        elif language == "gdscript":
+            for child in node.children:
+                if child.type == "type":
+                    for sub in child.children:
+                        if sub.type == "identifier":
+                            bases.append(
+                                sub.text.decode("utf-8", errors="replace")
+                            )
+                            break
+        elif language == "julia" and node.type == "struct_definition":
+            for child in node.children:
+                if child.type == "type_head":
+                    for sub in child.children:
+                        if sub.type == "binary_expression":
+                            # Dog <: AbstractAnimal — RHS is the base type
+                            found_op = False
+                            for sub2 in sub.children:
+                                if sub2.type == "operator" and sub2.text == b"<:":
+                                    found_op = True
+                                    continue
+                                if found_op and sub2.type == "identifier":
+                                    bases.append(sub2.text.decode("utf-8", errors="replace"))
                                     break
         return bases
 
@@ -4582,6 +4961,35 @@ class CodeParser:
             val = _find_string_literal(node)
             if val:
                 imports.append(val)
+        elif language == "gdscript":
+            if node.type == "extends_statement":
+                for child in node.children:
+                    if child.type == "type":
+                        for sub in child.children:
+                            if sub.type == "identifier":
+                                imports.append(
+                                    sub.text.decode("utf-8", errors="replace")
+                                )
+                                break
+        elif language == "julia" and node.type in ("using_statement", "import_statement"):
+            for child in node.children:
+                if child.type == "identifier":
+                    imports.append(child.text.decode("utf-8", errors="replace"))
+                elif child.type == "selected_import":
+                    parts = []
+                    selectors = []
+                    for sub in child.children:
+                        if sub.type == "identifier":
+                            if not parts:
+                                parts.append(sub.text.decode("utf-8", errors="replace"))
+                            else:
+                                selectors.append(sub.text.decode("utf-8", errors="replace"))
+                    base = ".".join(parts)
+                    if selectors:
+                        for name in selectors:
+                            imports.append(f"{base}.{name}")
+                    elif base:
+                        imports.append(base)
         else:
             # Fallback: just record the text
             imports.append(text)
@@ -4639,6 +5047,34 @@ class CodeParser:
                 if child.type == "method":
                     return child.text.decode("utf-8", errors="replace")
             return None  # method child not found
+
+        # PHP calls
+        if language == "php":
+            # function_call_expression: first child is a 'name' or 'qualified_name' node
+            if node.type == "function_call_expression" and first.type in (
+                "name", "qualified_name",
+            ):
+                name = first.text.decode("utf-8", errors="replace")
+                # Strip leading backslash for namespaced calls (\dirname → dirname)
+                return name.lstrip("\\")
+            # member_call_expression / nullsafe_member_call_expression:
+            # $obj->method() or $obj?->method() — find the 'name' child
+            if node.type in (
+                "member_call_expression", "nullsafe_member_call_expression",
+            ):
+                for child in node.children:
+                    if child.type == "name":
+                        return child.text.decode("utf-8", errors="replace")
+                return None
+            # scoped_call_expression: Class::method() or parent::method()
+            if node.type == "scoped_call_expression":
+                parts = []
+                for child in node.children:
+                    if child.type == "name":
+                        parts.append(child.text.decode("utf-8", errors="replace"))
+                if parts:
+                    return "::".join(parts)
+                return None
 
         # Simple call: func_name(args)
         # Kotlin uses "simple_identifier" instead of "identifier".
@@ -4931,21 +5367,23 @@ class CodeParser:
                 import_map, defined_names,
             )
 
-        if enclosing_func:
-            call_name = self._get_call_name(node, language, source)
-            if call_name:
-                caller = self._qualify(enclosing_func, file_path, enclosing_class)
-                target = self._resolve_call_target(
-                    call_name, file_path, language,
-                    import_map or {}, defined_names or set(),
-                )
-                edges.append(EdgeInfo(
-                    kind=EdgeKind.CALLS,
-                    source=caller,
-                    target=target,
-                    file_path=file_path,
-                    line=node.start_point[0] + 1,
-                ))
+        call_name = self._get_call_name(node, language, source)
+        if call_name:
+            caller = (
+                self._qualify(enclosing_func, file_path, enclosing_class)
+                if enclosing_func else file_path
+            )
+            target = self._resolve_call_target(
+                call_name, file_path, language,
+                import_map or {}, defined_names or set(),
+            )
+            edges.append(EdgeInfo(
+                kind="CALLS",
+                source=caller,
+                target=target,
+                file_path=file_path,
+                line=node.start_point[0] + 1,
+            ))
 
         self._extract_from_tree(
             node, source, language, file_path, nodes, edges,

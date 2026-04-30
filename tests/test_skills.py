@@ -663,8 +663,14 @@ class TestInstallPlatformConfigs:
         assert "code-review-graph" in data["mcpServers"]
         assert data["mcpServers"]["code-review-graph"]["type"] == "stdio"
         import shutil
-        expected_cmd = "uvx" if shutil.which("uvx") else "code-review-graph"
+        if shutil.which("uvx"):
+            expected_cmd = "uvx"
+            expected_args = ["code-review-graph", "serve"]
+        else:
+            expected_cmd = sys.executable
+            expected_args = ["-m", "code_review_graph", "serve"]
         assert data["mcpServers"]["code-review-graph"]["command"] == expected_cmd
+        assert data["mcpServers"]["code-review-graph"]["args"] == expected_args
 
 
 class TestCursorHooksConfig:

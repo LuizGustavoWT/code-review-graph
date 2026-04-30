@@ -59,7 +59,7 @@ class TestServeMainTransport:
 
         monkeypatch.setattr(crg_main.mcp, "run", fake_run)
         crg_main.main(repo_root=None)
-        assert calls == [{"transport": "stdio"}]
+        assert calls == [{"transport": "stdio", "show_banner": False}]
 
     def test_http_calls_mcp_run_with_host_port(self, monkeypatch):
         calls: list[dict] = []
@@ -228,10 +228,22 @@ class TestApplyToolFilter:
         _apply_tool_filter calls ``mcp.remove_tool()`` which is
         permanent.  We restore by re-adding from the saved snapshot.
         """
-        original = dict(crg_main.mcp._tool_manager._tools)
+        from fastmcp.tools.base import Tool
+
+        original = {
+            k: v
+            for k, v in crg_main.mcp._local_provider._components.items()
+            if isinstance(v, Tool)
+        }
         yield
-        crg_main.mcp._tool_manager._tools.clear()
-        crg_main.mcp._tool_manager._tools.update(original)
+        tool_keys = [
+            k
+            for k, v in crg_main.mcp._local_provider._components.items()
+            if isinstance(v, Tool)
+        ]
+        for k in tool_keys:
+            del crg_main.mcp._local_provider._components[k]
+        crg_main.mcp._local_provider._components.update(original)
 
     @pytest.fixture(autouse=True)
     def _clean_env(self, monkeypatch):
@@ -241,9 +253,9 @@ class TestApplyToolFilter:
     @pytest.mark.asyncio
     async def test_no_filter_keeps_all_tools(self):
         """When neither --tools nor CRG_TOOLS is set, all tools remain."""
-        before = set((await crg_main.mcp.get_tools()).keys())
+        before = {tool.name for tool in await crg_main.mcp.list_tools()}
         crg_main._apply_tool_filter(None)
-        after = set((await crg_main.mcp.get_tools()).keys())
+        after = {tool.name for tool in await crg_main.mcp.list_tools()}
         assert before == after
 
     @pytest.mark.asyncio
@@ -251,7 +263,7 @@ class TestApplyToolFilter:
         """The ``tools`` argument keeps only the listed tools."""
         keep = "query_graph_tool,semantic_search_nodes_tool"
         crg_main._apply_tool_filter(keep)
-        remaining = set((await crg_main.mcp.get_tools()).keys())
+        remaining = {tool.name for tool in await crg_main.mcp.list_tools()}
         assert remaining == {"query_graph_tool", "semantic_search_nodes_tool"}
 
     @pytest.mark.asyncio
@@ -259,7 +271,7 @@ class TestApplyToolFilter:
         """The ``CRG_TOOLS`` env var works as fallback."""
         monkeypatch.setenv("CRG_TOOLS", "query_graph_tool")
         crg_main._apply_tool_filter(None)
-        remaining = set((await crg_main.mcp.get_tools()).keys())
+        remaining = {tool.name for tool in await crg_main.mcp.list_tools()}
         assert remaining == {"query_graph_tool"}
 
     @pytest.mark.asyncio
@@ -267,21 +279,21 @@ class TestApplyToolFilter:
         """CLI --tools wins over CRG_TOOLS env var."""
         monkeypatch.setenv("CRG_TOOLS", "list_repos_tool")
         crg_main._apply_tool_filter("query_graph_tool")
-        remaining = set((await crg_main.mcp.get_tools()).keys())
+        remaining = {tool.name for tool in await crg_main.mcp.list_tools()}
         assert remaining == {"query_graph_tool"}
 
     @pytest.mark.asyncio
     async def test_empty_string_is_noop(self):
         """An empty string should not remove all tools."""
-        before = set((await crg_main.mcp.get_tools()).keys())
+        before = {tool.name for tool in await crg_main.mcp.list_tools()}
         crg_main._apply_tool_filter("")
-        after = set((await crg_main.mcp.get_tools()).keys())
+        after = {tool.name for tool in await crg_main.mcp.list_tools()}
         assert before == after
 
     @pytest.mark.asyncio
     async def test_whitespace_handling(self):
         """Spaces around tool names are stripped."""
         crg_main._apply_tool_filter(" query_graph_tool , semantic_search_nodes_tool ")
-        remaining = set((await crg_main.mcp.get_tools()).keys())
+        remaining = {tool.name for tool in await crg_main.mcp.list_tools()}
         assert remaining == {"query_graph_tool", "semantic_search_nodes_tool"}
 
