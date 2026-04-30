@@ -1,0 +1,4 @@
+source=tests/fixtures/sample_python.py::create_auth_service target=AuthService extra={'role': 'return'}
+source=tests/fixtures/sample_python.py::process_request target=AuthService extra={'role': 'param'}
+source=tests/fixtures/sample_python.py::guarded_process target=AuthService extra={'role': 'param'}
+PASS: USES_TYPE edges found for AuthService

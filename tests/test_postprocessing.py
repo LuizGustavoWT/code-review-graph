@@ -325,3 +325,196 @@ class TestWatchCallbackIntegration:
             callback.assert_not_called()
         finally:
             store.close()
+
+
+class TestDerivedEdges:
+    """Tests for on-the-fly derived edge computation (CLASS_USES, MODULE_DEPENDS_ON)."""
+
+    def setup_method(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.store = GraphStore(self.tmp.name)
+
+    def teardown_method(self):
+        self.store.close()
+        Path(self.tmp.name).unlink(missing_ok=True)
+
+    def test_class_uses_derivation(self):
+        """Class A.foo() calls B.bar() → CLASS_USES A → B."""
+        # File nodes
+        self.store.upsert_node(NodeInfo(
+            kind="File", name="/repo/a.py", file_path="/repo/a.py",
+            line_start=1, line_end=20, language="python",
+        ))
+        self.store.upsert_node(NodeInfo(
+            kind="File", name="/repo/b.py", file_path="/repo/b.py",
+            line_start=1, line_end=20, language="python",
+        ))
+        # Class A
+        self.store.upsert_node(NodeInfo(
+            kind="Class", name="A", file_path="/repo/a.py",
+            line_start=3, line_end=18, language="python",
+        ))
+        # Class B
+        self.store.upsert_node(NodeInfo(
+            kind="Class", name="B", file_path="/repo/b.py",
+            line_start=3, line_end=18, language="python",
+        ))
+        # Method A.foo
+        self.store.upsert_node(NodeInfo(
+            kind="Function", name="foo", file_path="/repo/a.py",
+            line_start=5, line_end=15, language="python",
+            parent_name="A",
+        ))
+        # Method B.bar
+        self.store.upsert_node(NodeInfo(
+            kind="Function", name="bar", file_path="/repo/b.py",
+            line_start=5, line_end=15, language="python",
+            parent_name="B",
+        ))
+        # CONTAINS edges
+        self.store.upsert_edge(EdgeInfo(
+            kind="CONTAINS", source="/repo/a.py::A",
+            target="/repo/a.py::A.foo", file_path="/repo/a.py",
+        ))
+        self.store.upsert_edge(EdgeInfo(
+            kind="CONTAINS", source="/repo/b.py::B",
+            target="/repo/b.py::B.bar", file_path="/repo/b.py",
+        ))
+        # CALLS: A.foo → B.bar
+        self.store.upsert_edge(EdgeInfo(
+            kind="CALLS", source="/repo/a.py::A.foo",
+            target="/repo/b.py::B.bar", file_path="/repo/a.py",
+            line=10,
+        ))
+        self.store.commit()
+
+        used = self.store.get_class_uses("/repo/a.py::A")
+        assert "/repo/b.py::B" in used
+        assert len(used) == 1
+
+    def test_class_uses_self_reference_omitted(self):
+        """Self-calls within a class are excluded from CLASS_USES."""
+        self.store.upsert_node(NodeInfo(
+            kind="File", name="/repo/a.py", file_path="/repo/a.py",
+            line_start=1, line_end=20, language="python",
+        ))
+        self.store.upsert_node(NodeInfo(
+            kind="Class", name="A", file_path="/repo/a.py",
+            line_start=3, line_end=18, language="python",
+        ))
+        self.store.upsert_node(NodeInfo(
+            kind="Function", name="foo", file_path="/repo/a.py",
+            line_start=5, line_end=10, language="python",
+            parent_name="A",
+        ))
+        self.store.upsert_node(NodeInfo(
+            kind="Function", name="bar", file_path="/repo/a.py",
+            line_start=12, line_end=17, language="python",
+            parent_name="A",
+        ))
+        self.store.upsert_edge(EdgeInfo(
+            kind="CONTAINS", source="/repo/a.py::A",
+            target="/repo/a.py::A.foo", file_path="/repo/a.py",
+        ))
+        self.store.upsert_edge(EdgeInfo(
+            kind="CONTAINS", source="/repo/a.py::A",
+            target="/repo/a.py::A.bar", file_path="/repo/a.py",
+        ))
+        # Self-call: A.foo → A.bar
+        self.store.upsert_edge(EdgeInfo(
+            kind="CALLS", source="/repo/a.py::A.foo",
+            target="/repo/a.py::A.bar", file_path="/repo/a.py",
+            line=8,
+        ))
+        self.store.commit()
+
+        used = self.store.get_class_uses("/repo/a.py::A")
+        assert used == []
+
+    def test_module_depends_derivation(self):
+        """File A imports File B + calls function in File B → MODULE_DEPENDS_ON."""
+        self.store.upsert_node(NodeInfo(
+            kind="File", name="/repo/a.py", file_path="/repo/a.py",
+            line_start=1, line_end=20, language="python",
+        ))
+        self.store.upsert_node(NodeInfo(
+            kind="File", name="/repo/b.py", file_path="/repo/b.py",
+            line_start=1, line_end=20, language="python",
+        ))
+        # Function a_func in a.py
+        self.store.upsert_node(NodeInfo(
+            kind="Function", name="a_func", file_path="/repo/a.py",
+            line_start=5, line_end=15, language="python",
+        ))
+        # Function b_func in b.py
+        self.store.upsert_node(NodeInfo(
+            kind="Function", name="b_func", file_path="/repo/b.py",
+            line_start=5, line_end=15, language="python",
+        ))
+        # IMPORTS_FROM: a.py → b.py
+        self.store.upsert_edge(EdgeInfo(
+            kind="IMPORTS_FROM", source="/repo/a.py",
+            target="/repo/b.py", file_path="/repo/a.py",
+        ))
+        # CALLS: a_func → b_func (cross-file)
+        self.store.upsert_edge(EdgeInfo(
+            kind="CALLS", source="/repo/a.py::a_func",
+            target="/repo/b.py::b_func", file_path="/repo/a.py",
+            line=10,
+        ))
+        self.store.commit()
+
+        deps = self.store.get_module_dependencies("/repo/a.py")
+        assert "/repo/b.py" in deps
+
+    def test_module_depends_both_paths(self):
+        """File depends on another via import AND via call (deduplicated)."""
+        self.store.upsert_node(NodeInfo(
+            kind="File", name="/repo/a.py", file_path="/repo/a.py",
+            line_start=1, line_end=30, language="python",
+        ))
+        self.store.upsert_node(NodeInfo(
+            kind="File", name="/repo/b.py", file_path="/repo/b.py",
+            line_start=1, line_end=20, language="python",
+        ))
+        self.store.upsert_node(NodeInfo(
+            kind="File", name="/repo/c.py", file_path="/repo/c.py",
+            line_start=1, line_end=20, language="python",
+        ))
+        # Function a_func
+        self.store.upsert_node(NodeInfo(
+            kind="Function", name="a_func", file_path="/repo/a.py",
+            line_start=5, line_end=25, language="python",
+        ))
+        # Function b_func
+        self.store.upsert_node(NodeInfo(
+            kind="Function", name="b_func", file_path="/repo/b.py",
+            line_start=5, line_end=15, language="python",
+        ))
+        # Function c_func
+        self.store.upsert_node(NodeInfo(
+            kind="Function", name="c_func", file_path="/repo/c.py",
+            line_start=5, line_end=15, language="python",
+        ))
+        # IMPORTS_FROM: a.py → b.py (explicit import)
+        self.store.upsert_edge(EdgeInfo(
+            kind="IMPORTS_FROM", source="/repo/a.py",
+            target="/repo/b.py", file_path="/repo/a.py",
+        ))
+        # CALLS: a_func → b_func
+        self.store.upsert_edge(EdgeInfo(
+            kind="CALLS", source="/repo/a.py::a_func",
+            target="/repo/b.py::b_func", file_path="/repo/a.py",
+            line=10,
+        ))
+        # CALLS: a_func → c_func (cross-file, no explicit import)
+        self.store.upsert_edge(EdgeInfo(
+            kind="CALLS", source="/repo/a.py::a_func",
+            target="/repo/c.py::c_func", file_path="/repo/a.py",
+            line=15,
+        ))
+        self.store.commit()
+
+        deps = self.store.get_module_dependencies("/repo/a.py")
+        assert "/repo/b.py" in deps
+        assert "/repo/c.py" in deps

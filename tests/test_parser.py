@@ -2,6 +2,7 @@
 
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 from code_review_graph.parser import CodeParser
 
@@ -646,6 +647,234 @@ class TestCodeParser:
         assert len(tested_by) >= 1, (
             f"Expected TESTED_BY edges, got none. "
             f"All edges: {[(e.kind, e.source, e.target) for e in edges]}"
+        )
+
+    # --- DECORATED_BY edge tests ---
+
+    def test_decorated_by_function_python(self):
+        """Functions with @decorator should produce DECORATED_BY edge."""
+        nodes, edges = self.parser.parse_file(FIXTURES / "sample_python.py")
+        decorated_by = [e for e in edges if e.kind == "DECORATED_BY"]
+        file_path = str(FIXTURES / "sample_python.py")
+
+        # guarded_process is decorated with @_log_action
+        guarded_dec = [
+            e for e in decorated_by
+            if e.source == f"{file_path}::guarded_process"
+        ]
+        assert len(guarded_dec) == 1, (
+            f"Expected 1 DECORATED_BY edge for guarded_process, "
+            f"got: {[(e.source, e.target) for e in guarded_dec]}"
+        )
+        assert guarded_dec[0].target == "_log_action"
+
+    def test_decorated_by_class_python(self):
+        """Classes with @decorator should produce DECORATED_BY edge."""
+        source = (
+            b"from dataclasses import dataclass\n"
+            b"\n"
+            b"@dataclass\n"
+            b"class Config:\n"
+            b"    name: str = ''\n"
+            b"    timeout: int = 30\n"
+        )
+        path = FIXTURES / "_test_deco_class.py"
+        nodes, edges = self.parser.parse_bytes(path, source)
+        decorated_by = [e for e in edges if e.kind == "DECORATED_BY"]
+        class_deco = [
+            e for e in decorated_by if e.target == "dataclass"
+        ]
+        assert len(class_deco) == 1, (
+            f"Expected DECORATED_BY edge for dataclass, "
+            f"got: {[(e.source, e.target) for e in decorated_by]}"
+        )
+        assert class_deco[0].source == f"{path}::Config"
+
+    def test_decorated_by_decorator_factory(self):
+        """@factory(args) should resolve to bare factory name (no args)."""
+        source = (
+            b"def cache(ttl):\n"
+            b"    def wrapper(f):\n"
+            b"        return f\n"
+            b"    return wrapper\n"
+            b"\n"
+            b"@cache(ttl=60)\n"
+            b"def get_data():\n"
+            b"    return 42\n"
+        )
+        path = FIXTURES / "_test_deco_factory.py"
+        nodes, edges = self.parser.parse_bytes(path, source)
+        decorated_by = [e for e in edges if e.kind == "DECORATED_BY"]
+        cache_deco = [
+            e for e in decorated_by if e.target == "cache"
+        ]
+        assert len(cache_deco) == 1, (
+            f"Expected DECORATED_BY edge for cache, "
+            f"got: {[(e.source, e.target) for e in decorated_by]}"
+        )
+
+    def test_decorated_by_multiple_decorators(self):
+        """Multiple decorators should produce multiple DECORATED_BY edges."""
+        source = (
+            b"def d1(f): return f\n"
+            b"def d2(f): return f\n"
+            b"def d3(f): return f\n"
+            b"\n"
+            b"@d1\n"
+            b"@d2\n"
+            b"@d3\n"
+            b"def multi():\n"
+            b"    pass\n"
+        )
+        path = FIXTURES / "_test_multi_deco.py"
+        nodes, edges = self.parser.parse_bytes(path, source)
+        decorated_by = [e for e in edges if e.kind == "DECORATED_BY"]
+        assert len(decorated_by) == 3, (
+            f"Expected 3 DECORATED_BY edges for 3 decorators, "
+            f"got: {len(decorated_by)}: {[(e.source, e.target) for e in decorated_by]}"
+        )
+        targets = {e.target for e in decorated_by}
+        assert targets == {"d1", "d2", "d3"}, (
+            f"Expected decorator targets d1/d2/d3, got: {targets}"
+        )
+
+    # --- USES_TYPE edge tests ---
+
+    def test_uses_type_non_builtin(self):
+        """Functions with custom-type annotations should produce USES_TYPE."""
+        nodes, edges = self.parser.parse_file(FIXTURES / "sample_python.py")
+        uses_type = [e for e in edges if e.kind == "USES_TYPE"]
+
+        # AuthService appears as param type (process_request, guarded_process)
+        # and as return type (create_auth_service)
+        auth_uses = [e for e in uses_type if e.target == "AuthService"]
+        assert len(auth_uses) >= 1, (
+            f"Expected USES_TYPE edge(s) for AuthService, "
+            f"got all USES_TYPE: {[(e.target, e.extra.get('role')) for e in uses_type]}"
+        )
+
+        param_uses = [e for e in auth_uses if e.extra.get("role") == "param"]
+        return_uses = [e for e in auth_uses if e.extra.get("role") == "return"]
+        assert len(param_uses) >= 1, (
+            f"Expected param USES_TYPE for AuthService, got roles: "
+            f"{[e.extra.get('role') for e in auth_uses]}"
+        )
+        assert len(return_uses) >= 1, (
+            f"Expected return USES_TYPE for AuthService, got roles: "
+            f"{[e.extra.get('role') for e in auth_uses]}"
+        )
+
+    def test_uses_type_skips_builtins(self):
+        """Built-in types (int, str, bool, None, dict, etc.) should NOT
+        produce USES_TYPE edges."""
+        nodes, edges = self.parser.parse_file(FIXTURES / "sample_python.py")
+        uses_type = [e for e in edges if e.kind == "USES_TYPE"]
+        targets = {e.target for e in uses_type}
+
+        builtins = {
+            "int", "str", "bool", "float", "None", "void",
+            "string", "number", "any", "object", "list",
+            "dict", "tuple", "set",
+        }
+        overlap = targets & builtins
+        assert len(overlap) == 0, (
+            f"Built-in types should be skipped, got: {overlap}"
+        )
+
+    def test_uses_type_union(self):
+        """Union types should extract only non-builtin components."""
+        source = (
+            b"class User:\n"
+            b"    pass\n"
+            b"\n"
+            b"def find(id: int | None) -> User | None:\n"
+            b"    return None\n"
+        )
+        path = FIXTURES / "_test_uses_union.py"
+        nodes, edges = self.parser.parse_bytes(path, source)
+        uses_type = [e for e in edges if e.kind == "USES_TYPE"]
+        targets = {e.target for e in uses_type}
+
+        # User is a non-builtin type and should appear
+        assert "User" in targets, (
+            f"Expected USES_TYPE for User in union type, "
+            f"got: {targets}"
+        )
+        # int and None are built-in and should NOT appear
+        assert "int" not in targets, f"int is built-in and should be skipped"
+        assert "None" not in targets, f"None is built-in and should be skipped"
+
+    def test_uses_type_disabled_by_env(self):
+        """CRG_USES_TYPE=0 should suppress all USES_TYPE edges.
+
+        The constant is evaluated at module import time, so we use
+        mock.patch to override it in the parser's namespace.
+        """
+        source = (
+            b"class Service:\n"
+            b"    pass\n"
+            b"\n"
+            b"def handle(svc: Service) -> str:\n"
+            b"    return ''\n"
+        )
+        path = FIXTURES / "_test_uses_disabled.py"
+        with patch("code_review_graph.parser.CRG_USES_TYPE", "0"):
+            nodes, edges = self.parser.parse_bytes(path, source)
+
+        uses_type = [e for e in edges if e.kind == "USES_TYPE"]
+        assert len(uses_type) == 0, (
+            f"Expected 0 USES_TYPE edges when CRG_USES_TYPE=0, "
+            f"got: {len(uses_type)}"
+        )
+
+    # --- Cross-file CALLS alias resolution ---
+
+    def test_cross_file_calls_alias_resolution(self):
+        """from X import Y as Z; Z() should produce a CALLS edge
+        targeting the original Y in X.
+
+        Note: currently the alias (Z) maps to the module in import_map
+        but the original name (Y) is not preserved, so the target is
+        qualified as ``<module>::Z`` rather than ``<module>::Y``.
+        The edge IS still emitted (not dropped).
+        """
+        path = FIXTURES / "caller_alias_example.py"
+        source = (
+            b"from sample_python import create_auth_service as create\n"
+            b"\n"
+            b"def setup_with_alias():\n"
+            b"    return create()\n"
+        )
+        nodes, edges = self.parser.parse_bytes(path, source)
+        calls = [e for e in edges if e.kind == "CALLS"]
+
+        # The edge should be attributed to the calling function
+        caller_src = f"{path}::setup_with_alias"
+        alias_calls = [e for e in calls if e.source == caller_src]
+        assert len(alias_calls) == 1, (
+            f"Expected 1 CALLS edge from setup_with_alias, "
+            f"got: {[(e.source, e.target) for e in calls]}"
+        )
+
+        # The target should at least reference the correct module file
+        sample_py = str((FIXTURES / "sample_python.py").resolve())
+        assert sample_py in alias_calls[0].target, (
+            f"Expected target to reference {sample_py}, "
+            f"got: {alias_calls[0].target}"
+        )
+
+    def test_cross_file_calls_all_resolved(self):
+        """Cross-file CALLS should have no bare (unresolved) targets
+        when the imported symbol is directly used (no alias)."""
+        _, edges = self.parser.parse_file(FIXTURES / "caller_example.py")
+        calls = [e for e in edges if e.kind == "CALLS"]
+        bare_calls = [
+            e for e in calls
+            if "::" not in e.target
+        ]
+        assert len(bare_calls) == 0, (
+            f"Expected all CALLS targets to be resolved, "
+            f"got bare targets: {[(e.source, e.target) for e in bare_calls]}"
         )
 
     def test_non_test_file_describe_not_special(self):

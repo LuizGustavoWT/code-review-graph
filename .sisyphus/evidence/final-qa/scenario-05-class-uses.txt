@@ -1,0 +1,11 @@
+/tmp/crg_qa_p2e81qom/repo/sample 2.ex::MathHelpers uses ['/tmp/crg_qa_p2e81qom/repo/sample 2.ex::Calculator']
+/tmp/crg_qa_p2e81qom/repo/sample 3.ex::MathHelpers uses ['/tmp/crg_qa_p2e81qom/repo/sample 3.ex::Calculator']
+/tmp/crg_qa_p2e81qom/repo/sample.ex::MathHelpers uses ['/tmp/crg_qa_p2e81qom/repo/sample.ex::Calculator']
+/tmp/crg_qa_p2e81qom/repo/sample.scala::InMemoryRepo uses ['/tmp/crg_qa_p2e81qom/repo/sample.swift::DataStore']
+/tmp/crg_qa_p2e81qom/repo/sample.scala::UserService uses ['/tmp/crg_qa_p2e81qom/repo/sample.scala::Repository']
+/tmp/crg_qa_p2e81qom/repo/sample.sol::BoostedPool uses ['/tmp/crg_qa_p2e81qom/repo/sample.sol::RewardMath']
+/tmp/crg_qa_p2e81qom/repo/sample_python.py::AuthService uses ['/tmp/crg_qa_p2e81qom/repo/sample_python.py::BaseService']
+/tmp/crg_qa_p2e81qom/repo/sample_rust.rs::Repository uses ['/tmp/crg_qa_p2e81qom/repo/sample.swift::DataStore']
+/tmp/crg_qa_p2e81qom/repo/sample_typescript.ts::UserRepository uses ['/tmp/crg_qa_p2e81qom/repo/sample.swift::DataStore']
+/tmp/crg_qa_p2e81qom/repo/sample_typescript.ts::UserService uses ['/tmp/crg_qa_p2e81qom/repo/sample_typescript.ts::UserRepository']
+PASS: CLASS_USES derived correctly

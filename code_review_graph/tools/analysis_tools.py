@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from typing import Any
 
 from ..analysis import (
@@ -11,6 +12,8 @@ from ..analysis import (
     find_surprising_connections,
     generate_suggested_questions,
 )
+from ..constants import EdgeKind
+from ..graph import GraphNode
 from ._common import _get_store
 
 
@@ -167,3 +170,170 @@ def get_suggested_questions_func(
             "get_architecture_overview -- community map",
         ],
     }
+
+
+def dependency_matrix(
+    scope: str = "",
+    mode: str = "class_level",
+    depth: int = 1,
+    repo_root: str = "",
+) -> dict[str, Any]:
+    """Compute a dependency matrix for classes or modules in the given scope.
+
+    Args:
+        scope: File path prefix or class name to filter by.
+        mode: "class_level" or "module_level".
+        depth: Dependency traversal depth (1-3). Default 1 (direct only).
+        repo_root: Repository root (auto-detected if empty).
+    """
+    store, _root = _get_store(repo_root or None)
+    try:
+        depth = max(1, min(depth, 3))
+        scope_is_path = "/" in scope or "\\" in scope
+        entities: list[GraphNode] = []
+
+        if mode == "class_level":
+            if scope_is_path:
+                for file_path in store.get_all_files():
+                    if file_path.startswith(scope):
+                        for node in store.get_nodes_by_file(file_path):
+                            if node.kind == "Class":
+                                entities.append(node)
+            elif scope:
+                candidates = store.search_nodes(scope, limit=50)
+                entities = [n for n in candidates if n.kind == "Class"]
+            else:
+                for file_path in store.get_all_files():
+                    for node in store.get_nodes_by_file(file_path):
+                        if node.kind == "Class":
+                            entities.append(node)
+        else:
+            if scope:
+                for file_path in store.get_all_files():
+                    if file_path.startswith(scope):
+                        node = store.get_node(file_path)
+                        if node:
+                            entities.append(node)
+            else:
+                for file_path in store.get_all_files():
+                    node = store.get_node(file_path)
+                    if node:
+                        entities.append(node)
+
+        truncated = False
+        if len(entities) > 500:
+            entities = entities[:500]
+            truncated = True
+
+        direct_deps: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+
+        if mode == "class_level":
+            for cls in entities:
+                methods = []
+                for e in store.get_edges_by_source(cls.qualified_name):
+                    if e.kind == EdgeKind.CONTAINS:
+                        child = store.get_node(e.target_qualified)
+                        if child and child.kind in ("Function", "Method"):
+                            methods.append(e.target_qualified)
+                for method_qn in methods:
+                    for e in store.get_edges_by_source(method_qn):
+                        if e.kind == EdgeKind.CALLS:
+                            callee_class = None
+                            for ce in store.get_edges_by_target(e.target_qualified):
+                                if ce.kind == EdgeKind.CONTAINS:
+                                    container = store.get_node(ce.source_qualified)
+                                    if container and container.kind == "Class":
+                                        callee_class = ce.source_qualified
+                                        break
+                            if callee_class and callee_class != cls.qualified_name:
+                                direct_deps[cls.qualified_name][callee_class] += 1
+        else:
+            for file_node in entities:
+                for e in store.get_edges_by_source(file_node.qualified_name):
+                    if e.kind == EdgeKind.IMPORTS_FROM:
+                        target_fp = e.target_qualified
+                        if target_fp and target_fp != file_node.qualified_name:
+                            direct_deps[file_node.qualified_name][target_fp] += 1
+                for node in store.get_nodes_by_file(file_node.qualified_name):
+                    for e in store.get_edges_by_source(node.qualified_name):
+                        if e.kind in (EdgeKind.CALLS, EdgeKind.IMPORTS_FROM):
+                            target_node = store.get_node(e.target_qualified)
+                            target_fp = target_node.file_path if target_node else None
+                            if target_fp and target_fp != file_node.qualified_name:
+                                direct_deps[file_node.qualified_name][target_fp] += 1
+
+        matrix: list[dict] = []
+        visited_pairs: set[tuple[str, str]] = set()
+
+        for src in list(direct_deps.keys()):
+            queue = [(src, 0)]
+            visited = {src}
+            while queue:
+                current, cur_depth = queue.pop(0)
+                if cur_depth >= depth:
+                    continue
+                for tgt, strength in direct_deps.get(current, {}).items():
+                    pair = (src, tgt)
+                    if pair not in visited_pairs:
+                        visited_pairs.add(pair)
+                        matrix.append({
+                            "source": src,
+                            "target": tgt,
+                            "strength": strength if current == src else 1,
+                        })
+                    else:
+                        for entry in matrix:
+                            if entry["source"] == src and entry["target"] == tgt:
+                                if current == src:
+                                    entry["strength"] += strength
+                                break
+                    if tgt not in visited and cur_depth + 1 < depth:
+                        visited.add(tgt)
+                        queue.append((tgt, cur_depth + 1))
+
+        total_entities = len(entities)
+        if total_entities == 0:
+            return {
+                "status": "ok",
+                "mode": mode,
+                "scope": scope,
+                "matrix": [],
+                "coupling_score": 0.0,
+                "hub_classes" if mode == "class_level" else "hub_modules": [],
+                "leaf_classes" if mode == "class_level" else "leaf_modules": [],
+                "truncated": truncated,
+            }
+
+        outgoing_counts: dict[str, int] = {}
+        incoming_counts: dict[str, int] = {}
+        for entry in matrix:
+            src = entry["source"]
+            tgt = entry["target"]
+            outgoing_counts[src] = outgoing_counts.get(src, 0) + 1
+            incoming_counts[tgt] = incoming_counts.get(tgt, 0) + 1
+
+        all_entities_qn = {e.qualified_name for e in entities}
+        connected = set(outgoing_counts.keys()) | set(incoming_counts.keys())
+        hub_scores = {
+            qn: outgoing_counts.get(qn, 0) + incoming_counts.get(qn, 0)
+            for qn in all_entities_qn
+        }
+        sorted_hubs = sorted(hub_scores.items(), key=lambda x: x[1], reverse=True)
+        leaves = [qn for qn in all_entities_qn if qn not in outgoing_counts]
+        coupling_score = len(connected) / total_entities if total_entities > 0 else 0.0
+
+        hub_key = "hub_classes" if mode == "class_level" else "hub_modules"
+        leaf_key = "leaf_classes" if mode == "class_level" else "leaf_modules"
+
+        return {
+            "status": "ok",
+            "mode": mode,
+            "scope": scope,
+            "matrix": matrix,
+            "coupling_score": round(coupling_score, 3),
+            hub_key: [{"name": qn, "score": score} for qn, score in sorted_hubs[:10]],
+            leaf_key: leaves,
+            "truncated": truncated,
+        }
+    finally:
+        store.close()

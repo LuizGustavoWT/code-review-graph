@@ -25,6 +25,7 @@ from .tools import (
     apply_refactor_func,
     build_or_update_graph,
     cross_repo_search_func,
+    dependency_matrix,
     detect_changes_func,
     embed_graph,
     find_large_functions,
@@ -43,7 +44,6 @@ from .tools import (
     get_suggested_questions_func,
     get_surprising_connections_func,
     get_wiki_page_func,
-    traverse_graph_func,
     list_communities_func,
     list_flows,
     list_graph_stats,
@@ -52,6 +52,7 @@ from .tools import (
     refactor_func,
     run_postprocess,
     semantic_search_nodes,
+    traverse_graph_func,
 )
 
 # NOTE: Thread-safe for stdio MCP (single-threaded). If adding HTTP/SSE
@@ -697,6 +698,31 @@ def get_wiki_page_tool(
     """
     return get_wiki_page_func(
         community_name=community_name, repo_root=_resolve_repo_root(repo_root),
+    )
+
+
+@mcp.tool()
+def dependency_matrix_tool(
+    scope: str = "",
+    mode: str = "class_level",
+    depth: int = 1,
+    repo_root: Optional[str] = None,
+) -> dict:
+    """Compute a dependency matrix for classes or modules in the given scope.
+
+    Returns a matrix of source -> target dependencies with strength scores,
+    plus coupling metrics, hub entities, and leaf entities.
+
+    Args:
+        scope: File path prefix or class name to filter by.
+        mode: "class_level" (method-call aggregation) or "module_level"
+            (file-import + call aggregation).
+        depth: Dependency traversal depth (1-3). Default 1 (direct only).
+        repo_root: Repository root path. Auto-detected if omitted.
+    """
+    return dependency_matrix(
+        scope=scope, mode=mode, depth=depth,
+        repo_root=_resolve_repo_root(repo_root) or "",
     )
 
 

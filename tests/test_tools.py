@@ -910,9 +910,9 @@ class TestComputeSummaries:
         """risk_index rows must match per-node caller counts, test
         coverage, security flag, and risk scores derived from the
         seeded graph."""
-        from code_review_graph.tools.build import _compute_summaries
+        from code_review_graph.postprocessing import _compute_summaries
 
-        _compute_summaries(self.store)
+        _compute_summaries(self.store, {}, [])
 
         rows = self.store._conn.execute(
             "SELECT qualified_name, caller_count, test_coverage, "
@@ -974,9 +974,9 @@ class TestComputeSummaries:
         symbols, size, and dominant language."""
         import json as _json
 
-        from code_review_graph.tools.build import _compute_summaries
+        from code_review_graph.postprocessing import _compute_summaries
 
-        _compute_summaries(self.store)
+        _compute_summaries(self.store, {}, [])
 
         rows = self.store._conn.execute(
             "SELECT community_id, name, key_symbols, size, "
@@ -1031,7 +1031,7 @@ class TestComputeSummaries:
         """
         import re
 
-        from code_review_graph.tools.build import _compute_summaries
+        from code_review_graph.postprocessing import _compute_summaries
 
         conn = self.store._conn
         per_row_selects: list[str] = []
@@ -1059,7 +1059,7 @@ class TestComputeSummaries:
 
         conn.set_trace_callback(trace)
         try:
-            _compute_summaries(self.store)
+            _compute_summaries(self.store, {}, [])
         finally:
             conn.set_trace_callback(None)
 
@@ -1146,3 +1146,140 @@ class TestGetMinimalContext:
             task="refactor auth module", repo_root=str(self.root),
         )
         assert "refactor" in result["next_tool_suggestions"]
+
+
+class TestClassQueryPatterns:
+    """Tests for class_callers_of and class_callees_of query patterns."""
+
+    def setup_method(self):
+        self.tmp = tempfile.mkdtemp()
+        self.root = Path(self.tmp).resolve()
+        (self.root / ".git").mkdir()
+        (self.root / ".code-review-graph").mkdir()
+        db_path = str(self.root / ".code-review-graph" / "graph.db")
+        self.store = GraphStore(db_path)
+        self._seed_data()
+
+    def teardown_method(self):
+        self.store.close()
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _seed_data(self):
+        auth_py = str(self.root / "auth.py")
+        main_py = str(self.root / "main.py")
+        self.store.upsert_node(NodeInfo(
+            kind="File", name="auth.py", file_path=auth_py,
+            line_start=1, line_end=50, language="python",
+        ))
+        self.store.upsert_node(NodeInfo(
+            kind="File", name="main.py", file_path=main_py,
+            line_start=1, line_end=30, language="python",
+        ))
+        self.store.upsert_node(NodeInfo(
+            kind="Class", name="AuthService", file_path=auth_py,
+            line_start=5, line_end=40, language="python",
+        ))
+        self.store.upsert_node(NodeInfo(
+            kind="Function", name="login", file_path=auth_py,
+            line_start=10, line_end=20, language="python",
+            parent_name="AuthService",
+        ))
+        self.store.upsert_node(NodeInfo(
+            kind="Class", name="MainController", file_path=main_py,
+            line_start=5, line_end=25, language="python",
+        ))
+        self.store.upsert_node(NodeInfo(
+            kind="Function", name="handle", file_path=main_py,
+            line_start=10, line_end=20, language="python",
+            parent_name="MainController",
+        ))
+        self.store.upsert_edge(EdgeInfo(
+            kind="CONTAINS", source=auth_py,
+            target=f"{auth_py}::AuthService", file_path=auth_py,
+        ))
+        self.store.upsert_edge(EdgeInfo(
+            kind="CONTAINS", source=f"{auth_py}::AuthService",
+            target=f"{auth_py}::AuthService.login", file_path=auth_py,
+        ))
+        self.store.upsert_edge(EdgeInfo(
+            kind="CONTAINS", source=main_py,
+            target=f"{main_py}::MainController", file_path=main_py,
+        ))
+        self.store.upsert_edge(EdgeInfo(
+            kind="CONTAINS", source=f"{main_py}::MainController",
+            target=f"{main_py}::MainController.handle", file_path=main_py,
+        ))
+        self.store.upsert_edge(EdgeInfo(
+            kind="CALLS", source=f"{main_py}::MainController.handle",
+            target=f"{auth_py}::AuthService.login", file_path=main_py, line=15,
+        ))
+        self.store.commit()
+
+    def test_class_callers_of_finds_calling_class(self):
+        from code_review_graph.tools.query import query_graph
+        result = query_graph(
+            "class_callers_of", f"{self.root / 'auth.py'}::AuthService",
+            repo_root=str(self.root),
+        )
+        assert result["status"] == "ok"
+        assert len(result["results"]) == 1
+        assert result["results"][0]["qualified_name"] == f"{self.root / 'main.py'}::MainController"
+        assert len(result["results"][0]["via_methods"]) == 1
+        assert result["results"][0]["via_methods"][0]["caller_method"] == f"{self.root / 'main.py'}::MainController.handle"
+
+    def test_class_callees_of_finds_called_class(self):
+        from code_review_graph.tools.query import query_graph
+        result = query_graph(
+            "class_callees_of", f"{self.root / 'main.py'}::MainController",
+            repo_root=str(self.root),
+        )
+        assert result["status"] == "ok"
+        assert len(result["results"]) == 1
+        assert result["results"][0]["qualified_name"] == f"{self.root / 'auth.py'}::AuthService"
+        assert len(result["results"][0]["via_methods"]) == 1
+        assert result["results"][0]["via_methods"][0]["callee_method"] == f"{self.root / 'auth.py'}::AuthService.login"
+
+    def test_class_callers_of_excludes_self_calls(self):
+        from code_review_graph.tools.query import query_graph
+        # Add a self-call: AuthService.login calls itself
+        auth_py = str(self.root / "auth.py")
+        self.store.upsert_edge(EdgeInfo(
+            kind="CALLS", source=f"{auth_py}::AuthService.login",
+            target=f"{auth_py}::AuthService.login", file_path=auth_py, line=18,
+        ))
+        self.store.commit()
+        result = query_graph(
+            "class_callers_of", f"{auth_py}::AuthService",
+            repo_root=str(self.root),
+        )
+        assert result["status"] == "ok"
+        # Should still only find MainController, not AuthService itself
+        qns = {r["qualified_name"] for r in result["results"]}
+        assert f"{auth_py}::AuthService" not in qns
+
+    def test_dependency_matrix_class_level(self):
+        from code_review_graph.tools.analysis_tools import dependency_matrix
+        result = dependency_matrix(
+            scope=str(self.root), mode="class_level", depth=1,
+            repo_root=str(self.root),
+        )
+        assert result["status"] == "ok"
+        assert len(result["matrix"]) == 1
+        assert result["matrix"][0]["source"] == f"{self.root / 'main.py'}::MainController"
+        assert result["matrix"][0]["target"] == f"{self.root / 'auth.py'}::AuthService"
+        assert result["coupling_score"] > 0
+        assert len(result["hub_classes"]) >= 1
+        assert len(result["leaf_classes"]) >= 1
+
+    def test_dependency_matrix_module_level(self):
+        from code_review_graph.tools.analysis_tools import dependency_matrix
+        result = dependency_matrix(
+            scope=str(self.root), mode="module_level", depth=1,
+            repo_root=str(self.root),
+        )
+        assert result["status"] == "ok"
+        assert len(result["matrix"]) >= 1
+        assert result["coupling_score"] > 0
+        assert len(result["hub_modules"]) >= 1
+        assert len(result["leaf_modules"]) >= 1

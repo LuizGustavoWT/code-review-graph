@@ -494,6 +494,11 @@ def main() -> None:
     # repos
     sub.add_parser("repos", help="List registered repositories")
 
+    # enrich
+    enrich_parser = sub.add_parser("enrich", help="Run enrichment for a specific language")
+    enrich_parser.add_argument("language", help="Language to enrich (python, rescript, ...)")
+    enrich_parser.add_argument("--repo", default=None, help="Repository root (auto-detected)")
+
     # eval
     eval_cmd = sub.add_parser("eval", help="Run evaluation benchmarks")
     eval_cmd.add_argument(
@@ -983,6 +988,26 @@ def main() -> None:
                     print(result.get("summary", "No summary available."))
                 else:
                     print(json.dumps(result, indent=2, default=str))
+
+        elif args.command == "enrich":
+            from .constants import ENRICHER_MAP
+            from .incremental import _run_enricher
+
+            language = args.language
+            if language not in ENRICHER_MAP:
+                print(f"Unknown language '{language}'.")
+                print(f"Available languages: {', '.join(sorted(ENRICHER_MAP.keys()))}")
+                sys.exit(1)
+
+            result = _run_enricher(language, store, repo_root)
+            if result is None:
+                print(f"Enricher '{language}' failed (see logs).")
+            elif result.get("skipped"):
+                print(f"Enricher '{language}' skipped: {result.get('reason', 'unknown')}")
+            else:
+                # Pretty-print stats, omitting internal fields
+                display = {k: v for k, v in result.items() if not k.startswith("_")}
+                print(f"Enricher '{language}' completed: {json.dumps(display)}")
 
     finally:
         store.close()

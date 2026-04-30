@@ -1,0 +1,2 @@
+USES_TYPE edges with CRG_USES_TYPE=0: 0
+PASS

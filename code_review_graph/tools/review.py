@@ -6,7 +6,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from ..changes import analyze_changes, parse_diff_ranges, parse_git_diff_ranges
+from ..changes import analyze_changes, parse_diff_ranges
+from ..constants import EdgeKind
 from ..flows import get_affected_flows as _get_affected_flows
 from ..graph import edge_to_dict, node_to_dict
 from ..hints import generate_hints, get_session
@@ -87,7 +88,7 @@ def get_review_context(
                 if n.kind == "Function" and not n.is_test
             ]
             test_edges = [
-                e for e in impact["edges"] if e.kind == "TESTED_BY"
+                e for e in impact["edges"] if e.kind == EdgeKind.TESTED_BY
             ]
             tested_qualified = {e.source_qualified for e in test_edges}
             test_gap_count = sum(
@@ -228,7 +229,7 @@ def _generate_review_guidance(
     changed_funcs = [
         n for n in impact["changed_nodes"] if n.kind == "Function"
     ]
-    test_edges = [e for e in impact["edges"] if e.kind == "TESTED_BY"]
+    test_edges = [e for e in impact["edges"] if e.kind == EdgeKind.TESTED_BY]
     tested_funcs = {e.source_qualified for e in test_edges}
 
     untested = [
@@ -252,7 +253,7 @@ def _generate_review_guidance(
     # Check for inheritance changes
     inheritance_edges = [
         e for e in impact["edges"]
-        if e.kind in ("INHERITS", "IMPLEMENTS")
+        if e.kind in (EdgeKind.INHERITS, EdgeKind.IMPLEMENTS)
     ]
     if inheritance_edges:
         guidance_parts.append(

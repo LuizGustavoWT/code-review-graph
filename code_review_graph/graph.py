@@ -18,7 +18,7 @@ from typing import Any, Optional
 
 import networkx as nx
 
-from .constants import BFS_ENGINE, MAX_IMPACT_DEPTH, MAX_IMPACT_NODES
+from .constants import BFS_ENGINE, MAX_IMPACT_DEPTH, MAX_IMPACT_NODES, EdgeKind
 from .migrations import get_schema_version, run_migrations
 from .parser import EdgeInfo, NodeInfo
 
@@ -74,6 +74,8 @@ CREATE INDEX IF NOT EXISTS idx_edges_target ON edges(target_qualified);
 CREATE INDEX IF NOT EXISTS idx_edges_kind ON edges(kind);
 CREATE INDEX IF NOT EXISTS idx_edges_target_kind ON edges(target_qualified, kind);
 CREATE INDEX IF NOT EXISTS idx_edges_source_kind ON edges(source_qualified, kind);
+CREATE INDEX IF NOT EXISTS idx_edges_kind_target ON edges(kind, target_qualified);
+CREATE INDEX IF NOT EXISTS idx_edges_kind_source ON edges(kind, source_qualified);
 CREATE INDEX IF NOT EXISTS idx_edges_file ON edges(file_path);
 """
 
@@ -350,7 +352,7 @@ class GraphStore:
         ).fetchall()
         return [self._row_to_edge(r) for r in rows]
 
-    def search_edges_by_target_name(self, name: str, kind: str = "CALLS") -> list[GraphEdge]:
+    def search_edges_by_target_name(self, name: str, kind: str = EdgeKind.CALLS) -> list[GraphEdge]:
         """Search for edges where target_qualified matches an unqualified name.
 
         CALLS edges often store unqualified target names (e.g. ``generateTestCode``)
@@ -473,7 +475,9 @@ class GraphStore:
         Disambiguation strategy:
           1. Single node with that name -> resolve directly
           2. Multiple candidates -> prefer one whose file is imported by the
-             source file (via IMPORTS_FROM edges)
+              source file (via IMPORTS_FROM edges)
+          3. Still ambiguous -> use CONTAINS edges to prefer methods of
+              classes defined in imported files
 
         Returns the number of resolved edges.
         """
@@ -504,6 +508,16 @@ class GraphStore:
             target_file = target.split("::", 1)[0] if "::" in target else target
             import_targets.setdefault(row["file_path"], set()).add(target_file)
 
+        # CONTAINS parent lookup: method_qualified -> parent_qualified
+        # Used for strategy 3 disambiguation to check if a candidate is a
+        # method of a class (parent contains '::') vs. a top-level function.
+        contains_parent: dict[str, str] = {}
+        for row in conn.execute(
+            "SELECT source_qualified, target_qualified FROM edges "
+            "WHERE kind = 'CONTAINS'"
+        ).fetchall():
+            contains_parent[row["target_qualified"]] = row["source_qualified"]
+
         resolved = 0
         for edge in bare_edges:
             bare_name = edge["target_qualified"]
@@ -511,16 +525,19 @@ class GraphStore:
             if not candidates:
                 continue
 
+            src_qn = edge["source_qualified"]
+            src_file = (
+                src_qn.split("::", 1)[0] if "::" in src_qn
+                else edge["file_path"]
+            )
+            imported_files = import_targets.get(src_file, set())
+
+            qualified: str | None = None
+
             if len(candidates) == 1:
                 qualified = candidates[0]
             else:
-                # Disambiguate via imports
-                src_qn = edge["source_qualified"]
-                src_file = (
-                    src_qn.split("::", 1)[0] if "::" in src_qn
-                    else edge["file_path"]
-                )
-                imported_files = import_targets.get(src_file, set())
+                # Strategy 2: prefer candidates from files imported by source
                 imported = [
                     c for c in candidates
                     if c.split("::", 1)[0] in imported_files
@@ -528,7 +545,24 @@ class GraphStore:
                 if len(imported) == 1:
                     qualified = imported[0]
                 else:
-                    continue
+                    # Strategy 3: CONTAINS-based disambiguation.
+                    # When multiple candidates exist (often the same file
+                    # has both a top-level function and a class method with
+                    # the same name), prefer methods of classes in imported
+                    # files over top-level functions.
+                    method_in_imported = []
+                    for c in (imported if imported else candidates):
+                        parent = contains_parent.get(c)
+                        if parent and "::" in parent:
+                            # This candidate is a method of a class
+                            parent_file = parent.split("::", 1)[0]
+                            if parent_file in imported_files:
+                                method_in_imported.append(c)
+                    if len(method_in_imported) == 1:
+                        qualified = method_in_imported[0]
+
+            if qualified is None:
+                continue
 
             conn.execute(
                 "UPDATE edges SET target_qualified = ? WHERE id = ?",
@@ -1252,7 +1286,7 @@ class GraphStore:
             "WHERE kind IN ('CALLS', 'TESTED_BY')"
         ):
             kind, src, tgt = row["kind"], row["source_qualified"], row["target_qualified"]
-            if kind == "CALLS":
+            if kind == EdgeKind.CALLS:
                 calls_out.setdefault(src, []).append(tgt)
             else:  # TESTED_BY
                 has_tested_by.add(tgt)
@@ -1263,6 +1297,144 @@ class GraphStore:
             nodes_by_qn=nodes_by_qn,
             nodes_by_id=nodes_by_id,
         )
+
+    # --- Derived edges (on-the-fly, NOT stored) ---
+
+    def get_class_uses(self, qn: str) -> list[str]:
+        """Return unique class qualified names used by the input class.
+
+        Walks ``CALLS`` edges from the class's methods, then follows
+        ``CONTAINS`` edges upward to find the containing class of each
+        call target.  Self-references are excluded.
+
+        Args:
+            qn: Qualified name of a ``Class`` node.
+
+        Returns:
+            Sorted list of class qualified names that *qn* depends on.
+            Empty list if *qn* is not a ``Class`` node or has no methods.
+        """
+        conn = self._conn
+
+        row = conn.execute(
+            "SELECT kind FROM nodes WHERE qualified_name = ?", (qn,),
+        ).fetchone()
+        if not row or row["kind"] != "Class":
+            return []
+
+        # Step 1: methods of this class via CONTAINS
+        methods = [
+            r["target_qualified"]
+            for r in conn.execute(
+                "SELECT target_qualified FROM edges "
+                "WHERE source_qualified = ? AND kind = 'CONTAINS'",
+                (qn,),
+            ).fetchall()
+        ]
+        if not methods:
+            return []
+
+        # Step 2: CALLS targets from those methods
+        called_targets: set[str] = set()
+        batch_size = 450
+        for i in range(0, len(methods), batch_size):
+            batch = methods[i:i + batch_size]
+            placeholders = ",".join("?" for _ in batch)
+            for r in conn.execute(
+                f"SELECT target_qualified FROM edges "  # nosec B608
+                f"WHERE source_qualified IN ({placeholders}) AND kind = 'CALLS'",
+                batch,
+            ).fetchall():
+                called_targets.add(r["target_qualified"])
+
+        if not called_targets:
+            return []
+
+        # Step 3: find containing class of each called target
+        used_classes: set[str] = set()
+        for called_qn in called_targets:
+            for r in conn.execute(
+                "SELECT source_qualified FROM edges "
+                "WHERE target_qualified = ? AND kind = 'CONTAINS'",
+                (called_qn,),
+            ).fetchall():
+                parent = r["source_qualified"]
+                if parent == qn:
+                    continue  # self-reference
+                node_row = conn.execute(
+                    "SELECT kind FROM nodes WHERE qualified_name = ?",
+                    (parent,),
+                ).fetchone()
+                if node_row and node_row["kind"] == "Class":
+                    used_classes.add(parent)
+
+        return sorted(used_classes)
+
+    def get_module_dependencies(self, file_path: str) -> list[str]:
+        """Return unique file paths that the given file depends on.
+
+        Two sources:
+        1. ``IMPORTS_FROM`` edges whose target resolves to a ``File`` node.
+        2. Cross-file ``CALLS`` — nodes in this file call nodes in other
+           files (identified by the file prefix of the qualified name).
+
+        Stdlib / external-package imports (targets that do not correspond
+        to a ``File`` node in the graph) are excluded.
+
+        Args:
+            file_path: Path of the file to analyse.
+
+        Returns:
+            Sorted list of file paths that *file_path* depends on.
+        """
+        conn = self._conn
+        deps: set[str] = set()
+
+        # Source 1: IMPORTS_FROM edges → local file dependencies
+        for r in conn.execute(
+            "SELECT target_qualified FROM edges "
+            "WHERE source_qualified = ? AND kind = 'IMPORTS_FROM'",
+            (file_path,),
+        ).fetchall():
+            target = r["target_qualified"]
+            is_file = conn.execute(
+                "SELECT 1 FROM nodes WHERE qualified_name = ? AND kind = 'File'",
+                (target,),
+            ).fetchone()
+            if is_file:
+                deps.add(target)
+
+        # Source 2: cross-file CALLS from this file's nodes
+        nodes = conn.execute(
+            "SELECT qualified_name FROM nodes WHERE file_path = ?",
+            (file_path,),
+        ).fetchall()
+        node_qns = [n["qualified_name"] for n in nodes]
+
+        if node_qns:
+            called_targets: set[str] = set()
+            batch_size = 450
+            for i in range(0, len(node_qns), batch_size):
+                batch = node_qns[i:i + batch_size]
+                placeholders = ",".join("?" for _ in batch)
+                for r in conn.execute(
+                    f"SELECT target_qualified FROM edges "  # nosec B608
+                    f"WHERE source_qualified IN ({placeholders}) AND kind = 'CALLS'",
+                    batch,
+                ).fetchall():
+                    called_targets.add(r["target_qualified"])
+
+            for target in called_targets:
+                target_file = target.split("::", 1)[0] if "::" in target else target
+                if target_file != file_path:
+                    is_file = conn.execute(
+                        "SELECT 1 FROM nodes WHERE qualified_name = ? AND kind = 'File'",
+                        (target_file,),
+                    ).fetchone()
+                    if is_file:
+                        deps.add(target_file)
+
+        return sorted(deps)
 
     # --- Internal helpers ---
 

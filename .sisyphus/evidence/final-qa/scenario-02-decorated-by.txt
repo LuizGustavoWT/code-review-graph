@@ -1,0 +1,2 @@
+source=tests/fixtures/sample_python.py::guarded_process target=_log_action
+PASS: DECORATED_BY edge found

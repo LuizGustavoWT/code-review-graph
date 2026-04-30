@@ -1,0 +1,2 @@
+CALLS
+PASS: EdgeKind.CALLS = CALLS

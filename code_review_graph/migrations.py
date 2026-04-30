@@ -238,6 +238,19 @@ def _migrate_v9(conn: sqlite3.Connection) -> None:
     logger.info("Migration v9: added edge confidence columns")
 
 
+def _migrate_v10(conn: sqlite3.Connection) -> None:
+    """v10: Add composite indexes on edges for kind+target and kind+source queries."""
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_edges_kind_target "
+        "ON edges(kind, target_qualified)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_edges_kind_source "
+        "ON edges(kind, source_qualified)"
+    )
+    logger.info("Migration v10: added kind+target and kind+source edge indexes")
+
+
 # ---------------------------------------------------------------------------
 # Migration registry
 # ---------------------------------------------------------------------------
@@ -251,6 +264,7 @@ MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     7: _migrate_v7,
     8: _migrate_v8,
     9: _migrate_v9,
+    10: _migrate_v10,
 }
 
 LATEST_VERSION = max(MIGRATIONS.keys())

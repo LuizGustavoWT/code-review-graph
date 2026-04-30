@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from .constants import EdgeKind
 from .parser import CodeParser, EdgeInfo
 from .parser import _is_test_file as _parser_is_test_file
 
@@ -171,7 +172,7 @@ def enrich_jedi_calls(store, repo_root: Path) -> dict:
                 target = f"{target_file}::{name.name}"
 
             store.upsert_edge(EdgeInfo(
-                kind="CALLS",
+                kind=EdgeKind.CALLS,
                 source=enclosing,
                 target=target,
                 file_path=file_path,

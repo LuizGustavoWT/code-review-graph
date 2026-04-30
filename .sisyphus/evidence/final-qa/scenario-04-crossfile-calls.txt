@@ -1,0 +1,13 @@
+Total CALLS edges: 319
+Cross-file CALLS: 192
+  /tmp/crg_qa_p2e81qom/repo/SampleJava.java::InMemoryRepo.findById -> Optional
+  /tmp/crg_qa_p2e81qom/repo/SampleJava.java::InMemoryRepo.findById -> users
+  /tmp/crg_qa_p2e81qom/repo/SampleJava.java::InMemoryRepo.save -> user
+  /tmp/crg_qa_p2e81qom/repo/SampleJava.java::InMemoryRepo.save -> user
+  /tmp/crg_qa_p2e81qom/repo/SampleJava.java::InMemoryRepo.save -> users
+  /tmp/crg_qa_p2e81qom/repo/SampleJava.java::UserService.User -> repo
+  /tmp/crg_qa_p2e81qom/repo/SampleJava.java::UserService.getUser -> repo
+  /tmp/crg_qa_p2e81qom/repo/alias_importer.ts::formatUser -> /tmp/crg_qa_p2e81qom/repo/src/lib/utils.ts::cn
+  /tmp/crg_qa_p2e81qom/repo/caller_example.py::setup_and_run -> /tmp/crg_qa_p2e81qom/repo/sample_python.py::create_auth_service
+  /tmp/crg_qa_p2e81qom/repo/multi_call_example.py::process_document -> /tmp/crg_qa_p2e81qom/repo/sample.swift::DataStore.get
+PASS: Cross-file CALLS resolved

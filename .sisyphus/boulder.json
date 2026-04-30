@@ -1,0 +1,23 @@
+{
+  "active_plan": "/home/luiz/code-review-graph/.sisyphus/plans/function-usage-graphs.md",
+  "started_at": "2026-04-30T14:48:32.779Z",
+  "session_ids": [
+    "ses_2215acb7dffen6LT3mvvs2XNd4"
+  ],
+  "session_origins": {
+    "ses_2215acb7dffen6LT3mvvs2XNd4": "direct"
+  },
+  "plan_name": "function-usage-graphs",
+  "agent": "atlas",
+  "task_sessions": {
+    "final-wave:f1": {
+      "task_key": "final-wave:f1",
+      "task_label": "F1",
+      "task_title": "**Plan Compliance Audit** — `oracle`",
+      "session_id": "ses_220a55d8dffeOt8TjBIUSMkaQ1",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-high",
+      "updated_at": "2026-04-30T17:12:39.604Z"
+    }
+  }
+}

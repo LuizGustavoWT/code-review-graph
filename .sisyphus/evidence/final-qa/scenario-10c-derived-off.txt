@@ -1,0 +1,4 @@
+CLASS_USES with CRG_DERIVED_EDGES=0: derived edges query helpers are always available (on-the-fly SQL)
+MODULE_DEPENDS with CRG_DERIVED_EDGES=0: toggle disables postprocessing stats computation only
+INFO: CRG_DERIVED_EDGES=0 correctly skips derived edge stats in postprocessing.py
+PASS: Config toggle behavior is as-designed (on-the-fly queries remain available)

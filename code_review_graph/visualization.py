@@ -20,6 +20,7 @@ from collections import Counter, defaultdict
 from dataclasses import asdict
 from pathlib import Path
 
+from .constants import EdgeKind
 from .graph import GraphStore, edge_to_dict, node_to_dict
 
 logger = logging.getLogger(__name__)
@@ -343,7 +344,7 @@ def _aggregate_file(data: dict) -> dict:
         file_edges.append({
             "source": f1,
             "target": f2,
-            "kind": "DEPENDS_ON",
+            "kind": EdgeKind.DEPENDS_ON,
             "weight": count,
         })
 
@@ -457,6 +458,10 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   .l-imports  { border-top: 2px dashed #f0883e; }
   .l-inherits { border-top: 2.5px dotted #d2a8ff; }
   .l-contains { border-top: 1.5px solid rgba(139,148,158,0.3); }
+  .l-decorated-by { border-top: 2px dotted #ff7b72; }
+  .l-uses-type { border-top: 2px dashed #79c0ff; }
+  .l-class-uses { border-top: 2px solid #ffa657; }
+  .l-module-depends { border-top: 2px dashed #bc8f8f; }
   #stats-bar {
     position: absolute; bottom: 0; left: 0; right: 0;
     background: rgba(13,17,23,0.95); border-top: 1px solid #21262d;
@@ -607,6 +612,10 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="legend-item" data-edge-kind="IMPORTS_FROM"><span class="legend-line l-imports"></span> Imports</div>
     <div class="legend-item" data-edge-kind="INHERITS"><span class="legend-line l-inherits"></span> Inherits</div>
     <div class="legend-item" data-edge-kind="CONTAINS"><span class="legend-line l-contains"></span> Contains</div>
+    <div class="legend-item" data-edge-kind="DECORATED_BY"><span class="legend-line l-decorated-by"></span> Decorated By</div>
+    <div class="legend-item" data-edge-kind="USES_TYPE"><span class="legend-line l-uses-type"></span> Uses Type</div>
+    <div class="legend-item" data-edge-kind="CLASS_USES"><span class="legend-line l-class-uses"></span> Class Uses</div>
+    <div class="legend-item" data-edge-kind="MODULE_DEPENDS_ON"><span class="legend-line l-module-depends"></span> Module Depends</div>
   </div>
 </div>
 <div id="filter-panel">
@@ -635,7 +644,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 var graphData = __GRAPH_DATA__;
 var KIND_COLOR  = { File:"#58a6ff", Class:"#f0883e", Function:"#3fb950", Test:"#d2a8ff", Type:"#8b949e" };
 var KIND_RADIUS = { File:18, Class:12, Function:6, Test:6, Type:5 };
-var EDGE_COLOR  = { CALLS:"#3fb950", IMPORTS_FROM:"#f0883e", INHERITS:"#d2a8ff", CONTAINS:"rgba(139,148,158,0.15)" };
+var EDGE_COLOR  = { CALLS:"#3fb950", IMPORTS_FROM:"#f0883e", INHERITS:"#d2a8ff", CONTAINS:"rgba(139,148,158,0.15)", DECORATED_BY:"#ff7b72", USES_TYPE:"#79c0ff", CLASS_USES:"#ffa657", MODULE_DEPENDS_ON:"#bc8f8f" };
 var communityColorScale = d3.scaleOrdinal(d3.schemeTableau10);
 var communityColoringOn = false;
 function escH(s) { return !s ? "" : s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;").replace(/`/g,"&#96;"); }
@@ -776,10 +785,14 @@ var simulation = d3.forceSimulation(nodes)
   .alphaDecay(isLarge ? 0.04 : 0.025)
   .velocityDecay(0.4);
 var EDGE_CFG = {
-  CONTAINS:     { dash:null, width:1, opacity:0.08, marker:"" },
-  CALLS:        { dash:null, width:1.5, opacity:0.7, marker:"url(#arrow-calls)" },
-  IMPORTS_FROM: { dash:"6,3", width:1.5, opacity:0.65, marker:"url(#arrow-imports)" },
-  INHERITS:     { dash:"3,4", width:2, opacity:0.7, marker:"url(#arrow-inherits)" },
+  CONTAINS:        { dash:null, width:1, opacity:0.08, marker:"" },
+  CALLS:           { dash:null, width:1.5, opacity:0.7, marker:"url(#arrow-calls)" },
+  IMPORTS_FROM:    { dash:"6,3", width:1.5, opacity:0.65, marker:"url(#arrow-imports)" },
+  INHERITS:        { dash:"3,4", width:2, opacity:0.7, marker:"url(#arrow-inherits)" },
+  DECORATED_BY:    { dash:"4,2", width:1.5, opacity:0.6, marker:"" },
+  USES_TYPE:       { dash:"2,2", width:1.5, opacity:0.6, marker:"" },
+  CLASS_USES:      { dash:null, width:2, opacity:0.7, marker:"" },
+  MODULE_DEPENDS_ON:{ dash:"6,3", width:1.5, opacity:0.65, marker:"url(#arrow-imports)" },
 };
 function eStyle(d) { return EDGE_CFG[d.kind] || {dash:null,width:1,opacity:0.3,marker:""}; }
 function eColor(d) { return EDGE_COLOR[d.kind] || "#484f58"; }
@@ -1236,6 +1249,10 @@ _AGGREGATED_HTML_TEMPLATE = r"""<!DOCTYPE html>
   .l-imports { border-top: 2px dashed #f0883e; }
   .l-inherits { border-top: 2.5px dotted #d2a8ff; }
   .l-contains { border-top: 1.5px solid rgba(139,148,158,0.3); }
+  .l-decorated-by { border-top: 2px dotted #ff7b72; }
+  .l-uses-type { border-top: 2px dashed #79c0ff; }
+  .l-class-uses { border-top: 2px solid #ffa657; }
+  .l-module-depends { border-top: 2px dashed #bc8f8f; }
   #stats-bar {
     position: absolute; bottom: 0; left: 0; right: 0;
     background: rgba(13,17,23,0.95); border-top: 1px solid #21262d;
@@ -1390,15 +1407,21 @@ var KIND_COLOR = {
 var EDGE_COLOR = {
   CROSS_COMMUNITY: "#58a6ff", DEPENDS_ON: "#f0883e",
   CALLS: "#3fb950", IMPORTS_FROM: "#f0883e",
-  INHERITS: "#d2a8ff", CONTAINS: "rgba(139,148,158,0.15)"
+  INHERITS: "#d2a8ff", CONTAINS: "rgba(139,148,158,0.15)",
+  DECORATED_BY: "#ff7b72", USES_TYPE: "#79c0ff",
+  CLASS_USES: "#ffa657", MODULE_DEPENDS_ON: "#bc8f8f"
 };
 var EDGE_CFG = {
-  CROSS_COMMUNITY: { dash: null, width: 2, opacity: 0.6, marker: "" },
-  DEPENDS_ON:      { dash: "6,3", width: 1.5, opacity: 0.5, marker: "" },
-  CONTAINS:        { dash: null, width: 1, opacity: 0.08, marker: "" },
-  CALLS:           { dash: null, width: 1.5, opacity: 0.7, marker: "url(#arrow-calls)" },
-  IMPORTS_FROM:    { dash: "6,3", width: 1.5, opacity: 0.65, marker: "url(#arrow-imports)" },
-  INHERITS:        { dash: "3,4", width: 2, opacity: 0.7, marker: "url(#arrow-inherits)" },
+  CROSS_COMMUNITY:   { dash: null, width: 2, opacity: 0.6, marker: "" },
+  DEPENDS_ON:        { dash: "6,3", width: 1.5, opacity: 0.5, marker: "" },
+  CONTAINS:          { dash: null, width: 1, opacity: 0.08, marker: "" },
+  CALLS:             { dash: null, width: 1.5, opacity: 0.7, marker: "url(#arrow-calls)" },
+  IMPORTS_FROM:      { dash: "6,3", width: 1.5, opacity: 0.65, marker: "url(#arrow-imports)" },
+  INHERITS:          { dash: "3,4", width: 2, opacity: 0.7, marker: "url(#arrow-inherits)" },
+  DECORATED_BY:      { dash: "4,2", width: 1.5, opacity: 0.6, marker: "" },
+  USES_TYPE:         { dash: "2,2", width: 1.5, opacity: 0.6, marker: "" },
+  CLASS_USES:        { dash: null, width: 2, opacity: 0.7, marker: "" },
+  MODULE_DEPENDS_ON: { dash: "6,3", width: 1.5, opacity: 0.65, marker: "url(#arrow-imports)" },
 };
 function eStyle(d) { return EDGE_CFG[d.kind] || { dash: null, width: 1, opacity: 0.3, marker: "" }; }
 function eColor(d) { return EDGE_COLOR[d.kind] || "#484f58"; }
@@ -1422,7 +1445,7 @@ function buildLegend(nodeKinds, edgeKinds) {
   edgeKinds.forEach(function(k) {
     var div = document.createElement("div");
     div.className = "legend-item";
-    var cls = k === "CROSS_COMMUNITY" ? "l-cross" : k === "DEPENDS_ON" ? "l-dep" : k === "CALLS" ? "l-calls" : k === "IMPORTS_FROM" ? "l-imports" : k === "INHERITS" ? "l-inherits" : "l-contains";
+    var cls = k === "CROSS_COMMUNITY" ? "l-cross" : k === "DEPENDS_ON" ? "l-dep" : k === "CALLS" ? "l-calls" : k === "IMPORTS_FROM" ? "l-imports" : k === "INHERITS" ? "l-inherits" : k === "DECORATED_BY" ? "l-decorated-by" : k === "USES_TYPE" ? "l-uses-type" : k === "CLASS_USES" ? "l-class-uses" : k === "MODULE_DEPENDS_ON" ? "l-module-depends" : "l-contains";
     var line = document.createElement("span");
     line.className = "legend-line " + cls;
     div.appendChild(line);

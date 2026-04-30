@@ -17,6 +17,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional
 
+from .constants import EdgeKind
 from .flows import _has_framework_decorator, _matches_entry_name
 from .graph import GraphStore, _sanitize_name
 
@@ -111,7 +112,7 @@ def rename_preview(
     # --- Call sites (CALLS edges targeting this node) ---
     call_edges = store.get_edges_by_target(node.qualified_name)
     for edge in call_edges:
-        if edge.kind == "CALLS":
+        if edge.kind == EdgeKind.CALLS:
             edits.append({
                 "file": edge.file_path,
                 "line": edge.line,
@@ -121,7 +122,7 @@ def rename_preview(
             })
 
     # Also search by bare name for unqualified edges.
-    bare_edges = store.search_edges_by_target_name(old_name, kind="CALLS")
+    bare_edges = store.search_edges_by_target_name(old_name, kind=EdgeKind.CALLS)
     seen = {(e["file"], e["line"]) for e in edits}
     for edge in bare_edges:
         key = (edge.file_path, edge.line)
@@ -138,7 +139,7 @@ def rename_preview(
     # --- Import sites (IMPORTS_FROM edges targeting this node) ---
     import_edges = store.get_edges_by_target(node.qualified_name)
     for edge in import_edges:
-        if edge.kind == "IMPORTS_FROM":
+        if edge.kind == EdgeKind.IMPORTS_FROM:
             key = (edge.file_path, edge.line)
             if key not in seen:
                 edits.append({
@@ -395,7 +396,7 @@ def find_dead_code(
             outgoing = store.get_edges_by_source(_check_qn)
             base_names = {
                 e.target_qualified.rsplit("::", 1)[-1]
-                for e in outgoing if e.kind == "INHERITS"
+                for e in outgoing if e.kind == EdgeKind.INHERITS
             }
             if base_names & _FRAMEWORK_BASE_CLASSES:
                 _is_framework_class = True
@@ -443,7 +444,7 @@ def find_dead_code(
             parent_qn = node.qualified_name.rsplit(".", 1)[0]
             parent_edges = store.get_edges_by_source(parent_qn)
             base_class_names = [
-                e.target_qualified for e in parent_edges if e.kind == "INHERITS"
+                e.target_qualified for e in parent_edges if e.kind == EdgeKind.INHERITS
             ]
             for base_name in base_class_names:
                 # Try fully-qualified base first, then bare name match
@@ -469,14 +470,14 @@ def find_dead_code(
         incoming = store.get_edges_by_target(node.qualified_name)
         # Also check class-qualified edges (e.g. "ClassName::method") which
         # lack the file-path prefix used in node.qualified_name.
-        if not any(e.kind == "CALLS" for e in incoming) and node.parent_name:
+        if not any(e.kind == EdgeKind.CALLS for e in incoming) and node.parent_name:
             class_qn = f"{node.parent_name}::{node.name}"
             incoming = incoming + store.get_edges_by_target(class_qn)
         # Also check bare-name and partially-qualified edges.
         # CALLS targets may be bare ("funcName"), class-qualified
         # ("Class::method"), or workspace-qualified ("pkg/dir::funcName").
-        if not any(e.kind == "CALLS" for e in incoming):
-            bare = store.search_edges_by_target_name(node.name, kind="CALLS")
+        if not any(e.kind == EdgeKind.CALLS for e in incoming):
+            bare = store.search_edges_by_target_name(node.name, kind=EdgeKind.CALLS)
             # Also search for partially-qualified targets ending with ::name
             suffix_rows = conn.execute(
                 "SELECT * FROM edges WHERE kind = 'CALLS'"
@@ -490,22 +491,22 @@ def find_dead_code(
                 if _is_plausible_caller(e.file_path, node.file_path, node.name)
             ]
             incoming = incoming + all_bare
-        if not any(e.kind == "TESTED_BY" for e in incoming):
-            bare_tb = store.search_edges_by_target_name(node.name, kind="TESTED_BY")
+        if not any(e.kind == EdgeKind.TESTED_BY for e in incoming):
+            bare_tb = store.search_edges_by_target_name(node.name, kind=EdgeKind.TESTED_BY)
             bare_tb = [
                 e for e in bare_tb
                 if _is_plausible_caller(e.file_path, node.file_path, node.name)
             ]
             incoming = incoming + bare_tb
         # Check INHERITS -- classes with subclasses are not dead.
-        if node.kind == "Class" and not any(e.kind == "INHERITS" for e in incoming):
-            bare_inh = store.search_edges_by_target_name(node.name, kind="INHERITS")
+        if node.kind == "Class" and not any(e.kind == EdgeKind.INHERITS for e in incoming):
+            bare_inh = store.search_edges_by_target_name(node.name, kind=EdgeKind.INHERITS)
             incoming = incoming + bare_inh
-        has_callers = any(e.kind == "CALLS" for e in incoming)
-        has_test_refs = any(e.kind == "TESTED_BY" for e in incoming)
-        has_importers = any(e.kind == "IMPORTS_FROM" for e in incoming)
-        has_references = any(e.kind == "REFERENCES" for e in incoming)
-        has_subclasses = any(e.kind == "INHERITS" for e in incoming)
+        has_callers = any(e.kind == EdgeKind.CALLS for e in incoming)
+        has_test_refs = any(e.kind == EdgeKind.TESTED_BY for e in incoming)
+        has_importers = any(e.kind == EdgeKind.IMPORTS_FROM for e in incoming)
+        has_references = any(e.kind == EdgeKind.REFERENCES for e in incoming)
+        has_subclasses = any(e.kind == EdgeKind.INHERITS for e in incoming)
 
         # For classes with no direct references, check if any member has callers.
         no_refs = not (
@@ -621,7 +622,7 @@ def suggest_refactorings(store: GraphStore) -> list[dict[str, Any]]:
 
             incoming_calls = [
                 e for e in store.get_edges_by_target(fnode.qualified_name)
-                if e.kind == "CALLS"
+                if e.kind == EdgeKind.CALLS
             ]
             if not incoming_calls:
                 continue
