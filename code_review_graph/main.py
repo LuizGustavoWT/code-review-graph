@@ -942,7 +942,11 @@ def _apply_tool_filter(tools: str | None = None) -> None:
     allowed = {t.strip() for t in raw.split(",") if t.strip()}
     if not allowed:
         return
-    registered = list(mcp._tool_manager._tools.keys())
+    from fastmcp.tools.base import Tool
+    registered = [
+        c.name for c in mcp._local_provider._components.values()
+        if isinstance(c, Tool)
+    ]
     for name in registered:
         if name not in allowed:
             mcp.remove_tool(name)

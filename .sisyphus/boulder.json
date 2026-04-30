@@ -1,0 +1,23 @@
+{
+  "active_plan": "/home/luiz/.local/share/opencode/worktree/bf29b85f066f3dcaf3a92c2c7e16db4a8bb6c0ab/crisp-cactus/.sisyphus/plans/test-failures-fix.md",
+  "started_at": "2026-04-30T18:54:58.236Z",
+  "session_ids": [
+    "ses_2206c53d8ffeMx4gTXEVxwLS68"
+  ],
+  "session_origins": {
+    "ses_2206c53d8ffeMx4gTXEVxwLS68": "direct"
+  },
+  "plan_name": "test-failures-fix",
+  "agent": "atlas",
+  "task_sessions": {
+    "todo:1": {
+      "task_key": "todo:1",
+      "task_label": "1",
+      "task_title": "Migrate `_tool_manager` to `_local_provider._components` in main.py",
+      "session_id": "ses_22038adc7ffearKx3RPyVa63v9",
+      "agent": "Sisyphus-Junior",
+      "category": "quick",
+      "updated_at": "2026-04-30T19:06:18.958Z"
+    }
+  }
+}

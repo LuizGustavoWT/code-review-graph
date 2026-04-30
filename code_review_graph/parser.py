@@ -674,7 +674,7 @@ class CodeParser:
 
         # Databricks .py notebook exports
         if language == "python" and source.startswith(
-            b"# Databricks notebook source\n",
+            (b"# Databricks notebook source\n", b"# Databricks notebook source\r\n"),
         ):
             return self._parse_databricks_py_notebook(path, source)
 
@@ -1200,7 +1200,7 @@ class CodeParser:
         text = source.decode("utf-8", errors="replace")
 
         # Strip the header line
-        lines = text.split("\n")
+        lines = text.splitlines()
         if lines and lines[0].strip() == "# Databricks notebook source":
             lines = lines[1:]
 
