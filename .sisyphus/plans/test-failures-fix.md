@@ -349,7 +349,7 @@ Wave FINAL:
 
 ---
 
-- [ ] 6. Implement shebang detection in `CodeParser.detect_language()`
+- [x] 6. Implement shebang detection in `CodeParser.detect_language()`
 
   **What to do**:
   - In `code_review_graph/parser.py`, modify `detect_language()` (line 642):
@@ -420,7 +420,7 @@ Wave FINAL:
 
 ---
 
-- [ ] 7. Fix module-scope CALLS edges (5 code paths)
+- [x] 7. Fix module-scope CALLS edges (5 code paths)
 
   **What to do**:
   - In `code_review_graph/parser.py`, fix the 5 code paths where CALLS edges are dropped when `enclosing_func` is `None`:
@@ -485,7 +485,7 @@ Wave FINAL:
 
 ---
 
-- [ ] 8. Fix Java parsing (name extraction + base types + import resolution)
+- [x] 8. Fix Java parsing (name extraction + base types + import resolution)
 
   **What to do**:
   - **A. Fix method name extraction** in `_get_name`:
@@ -548,7 +548,7 @@ Wave FINAL:
 
 ---
 
-- [ ] 9. Fix PHP call detection
+- [x] 9. Fix PHP call detection
 
   **What to do**:
   - In `code_review_graph/parser.py`:
@@ -597,7 +597,7 @@ Wave FINAL:
 
 ---
 
-- [ ] 10. Add GDScript type mappings
+- [x] 10. Add GDScript type mappings
 
   **What to do**:
   - In `code_review_graph/parser.py`, add `"gdscript"` entries to all four type mapping dictionaries:
@@ -653,7 +653,7 @@ Wave FINAL:
 
 ---
 
-- [ ] 11. Fix Julia parsing (mappings + construct handlers)
+- [x] 11. Fix Julia parsing (mappings + construct handlers)
 
   **What to do**:
   - In `code_review_graph/parser.py`:

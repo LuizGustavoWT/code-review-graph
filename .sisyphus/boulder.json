@@ -18,6 +18,15 @@
       "agent": "Sisyphus-Junior",
       "category": "quick",
       "updated_at": "2026-04-30T19:06:18.958Z"
+    },
+    "todo:6": {
+      "task_key": "todo:6",
+      "task_label": "6",
+      "task_title": "Implement shebang detection in `CodeParser.detect_language()`",
+      "session_id": "ses_2203506e9ffeWNhelAONBKKFDY",
+      "agent": "Sisyphus-Junior",
+      "category": "unspecified-high",
+      "updated_at": "2026-04-30T19:11:19.754Z"
     }
   }
 }

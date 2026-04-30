@@ -56,3 +56,38 @@
 4. `mcp.remove_tool(name)` still works but deprecated (warning: use `mcp.local_provider.remove_tool(name)`)
 
 **Verification:** `pytest tests/test_main.py::TestApplyToolFilter -q` — 6 passed
+
+## 2026-04-30 - Fixed module-scope CALLS edges in parser.py
+
+**Files changed:** `code_review_graph/parser.py`
+
+**Problem:** When a function call occurs at module scope (not inside any function body), `enclosing_func` is `None` and 4 code paths dropped the CALLS edge entirely. `_extract_value_references` already had the correct pattern.
+
+**Fixes applied to 4 functions:**
+
+1. **`_extract_calls` (line 3024):**
+   - Changed `if call_name and enclosing_func:` → `if call_name:`
+   - Added caller fallback: `caller = self._qualify(enclosing_func, file_path, enclosing_class) if enclosing_func else file_path`
+
+2. **`_extract_jsx_component_call` (line 3060):**
+   - Removed `if not enclosing_func: return` guard
+   - Added same caller fallback pattern
+
+3. **`_extract_elixir_constructs` (line 2100):**
+   - Removed `if enclosing_func:` guard around CALLS edge emission
+   - Added same caller fallback pattern
+
+4. **`_handle_r_call` (line 4647):**
+   - Removed `if enclosing_func:` guard
+   - Restructured to compute `call_name` first, then emit edge with fallback caller
+
+5. **`_extract_value_references` (lines 3153-3156):**
+   - Already correct — verified it uses `if enclosing_func: caller = self._qualify(...)` else `caller = file_path`
+
+**Key insight:** The fallback pattern `caller = self._qualify(enclosing_func, ...) if enclosing_func else file_path` is the consistent way to handle both function-scope and module-scope callers. Using `file_path` as the caller makes `find_dead_code` see module-scope callers as valid, fixing dead code detection false positives.
+
+**Verification:**
+- `pytest tests/test_parser.py::TestModuleScopeCalls -q` — 5 passed
+- `pytest tests/test_refactor.py::TestFindDeadCodeModuleScope -q` — 2 passed
+- `pytest tests/test_parser.py -k "test_module_scope_calls" -q` — 2 passed
+- `pytest tests/test_parser.py -q` — 90 passed (full suite regression-free)
