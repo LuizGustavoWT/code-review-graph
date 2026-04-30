@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from ..constants import EdgeKind
 from ..embeddings import EmbeddingStore
 from ..graph import _sanitize_name, edge_to_dict, node_to_dict
 from ..hints import generate_hints, get_session
@@ -22,6 +23,8 @@ logger = logging.getLogger(__name__)
 _QUERY_PATTERNS = {
     "callers_of": "Find all functions that call a given function",
     "callees_of": "Find all functions called by a given function",
+    "class_callers_of": "Find all classes whose methods call methods of a given class",
+    "class_callees_of": "Find all classes whose methods are called by methods of a given class",
     "imports_of": "Find all imports of a given file or module",
     "importers_of": "Find all files that import a given file or module",
     "children_of": "Find all nodes contained in a file or class",
@@ -145,8 +148,9 @@ def query_graph(
     """Run a predefined graph query.
 
     Args:
-        pattern: Query pattern. One of: callers_of, callees_of, imports_of,
-                 importers_of, children_of, tests_for, inheritors_of, file_summary.
+        pattern: Query pattern. One of: callers_of, callees_of, class_callers_of,
+                 class_callees_of, imports_of, importers_of, children_of, tests_for,
+                 inheritors_of, file_summary.
         target: The node name, qualified name, or file path to query about.
         repo_root: Repository root path. Auto-detected if omitted.
         detail_level: "standard" (full output) or "minimal" (summary only).
@@ -217,7 +221,7 @@ def query_graph(
 
         if pattern == "callers_of":
             for e in store.get_edges_by_target(qn):
-                if e.kind == "CALLS":
+                if e.kind == EdgeKind.CALLS:
                     caller = store.get_node(e.source_qualified)
                     if caller:
                         results.append(node_to_dict(caller))
@@ -234,7 +238,7 @@ def query_graph(
 
         elif pattern == "callees_of":
             for e in store.get_edges_by_source(qn):
-                if e.kind == "CALLS":
+                if e.kind == EdgeKind.CALLS:
                     callee = store.get_node(e.target_qualified)
                     if callee:
                         results.append(node_to_dict(callee))
@@ -242,7 +246,7 @@ def query_graph(
 
         elif pattern == "imports_of":
             for e in store.get_edges_by_source(qn):
-                if e.kind == "IMPORTS_FROM":
+                if e.kind == EdgeKind.IMPORTS_FROM:
                     results.append({"import_target": e.target_qualified})
                     edges_out.append(edge_to_dict(e))
 
@@ -255,7 +259,7 @@ def query_graph(
                 else node.file_path
             )
             for e in store.get_edges_by_target(abs_target):
-                if e.kind == "IMPORTS_FROM":
+                if e.kind == EdgeKind.IMPORTS_FROM:
                     results.append({
                         "importer": e.source_qualified,
                         "file": e.file_path,
@@ -264,14 +268,14 @@ def query_graph(
 
         elif pattern == "children_of":
             for e in store.get_edges_by_source(qn):
-                if e.kind == "CONTAINS":
+                if e.kind == EdgeKind.CONTAINS:
                     child = store.get_node(e.target_qualified)
                     if child:
                         results.append(node_to_dict(child))
 
         elif pattern == "tests_for":
             for e in store.get_edges_by_target(qn):
-                if e.kind == "TESTED_BY":
+                if e.kind == EdgeKind.TESTED_BY:
                     test = store.get_node(e.source_qualified)
                     if test:
                         results.append(node_to_dict(test))
@@ -286,7 +290,7 @@ def query_graph(
 
         elif pattern == "inheritors_of":
             for e in store.get_edges_by_target(qn):
-                if e.kind in ("INHERITS", "IMPLEMENTS"):
+                if e.kind in (EdgeKind.INHERITS, EdgeKind.IMPLEMENTS):
                     child = store.get_node(e.source_qualified)
                     if child:
                         results.append(node_to_dict(child))
@@ -295,12 +299,84 @@ def query_graph(
             # (e.g. "Animal") while qn is fully qualified
             # (e.g. "sample.dart::Animal"). Search by plain name too. See: #87
             if not results and node:
-                for kind in ("INHERITS", "IMPLEMENTS"):
+                for kind in (EdgeKind.INHERITS, EdgeKind.IMPLEMENTS):
                     for e in store.search_edges_by_target_name(node.name, kind=kind):
                         child = store.get_node(e.source_qualified)
                         if child:
                             results.append(node_to_dict(child))
                         edges_out.append(edge_to_dict(e))
+
+        elif pattern == "class_callers_of":
+            method_qns = []
+            for e in store.get_edges_by_source(qn):
+                if e.kind == EdgeKind.CONTAINS:
+                    child = store.get_node(e.target_qualified)
+                    if child and child.kind in ("Function", "Method"):
+                        method_qns.append(e.target_qualified)
+
+            calling_classes: dict[str, dict] = {}
+            for method_qn in method_qns:
+                for e in store.get_edges_by_target(method_qn):
+                    if e.kind == EdgeKind.CALLS:
+                        caller = store.get_node(e.source_qualified)
+                        if not caller:
+                            continue
+                        caller_class_qn = None
+                        for ce in store.get_edges_by_target(e.source_qualified):
+                            if ce.kind == EdgeKind.CONTAINS:
+                                container = store.get_node(ce.source_qualified)
+                                if container and container.kind == "Class":
+                                    caller_class_qn = ce.source_qualified
+                                    break
+                        if caller_class_qn and caller_class_qn != qn:
+                            if caller_class_qn not in calling_classes:
+                                calling_classes[caller_class_qn] = {
+                                    **node_to_dict(store.get_node(caller_class_qn)),
+                                    "via_methods": [],
+                                }
+                            calling_classes[caller_class_qn]["via_methods"].append({
+                                "target_method": method_qn,
+                                "caller_method": e.source_qualified,
+                            })
+                            edges_out.append(edge_to_dict(e))
+
+            results.extend(calling_classes.values())
+
+        elif pattern == "class_callees_of":
+            method_qns = []
+            for e in store.get_edges_by_source(qn):
+                if e.kind == EdgeKind.CONTAINS:
+                    child = store.get_node(e.target_qualified)
+                    if child and child.kind in ("Function", "Method"):
+                        method_qns.append(e.target_qualified)
+
+            called_classes: dict[str, dict] = {}
+            for method_qn in method_qns:
+                for e in store.get_edges_by_source(method_qn):
+                    if e.kind == EdgeKind.CALLS:
+                        callee = store.get_node(e.target_qualified)
+                        if not callee:
+                            continue
+                        callee_class_qn = None
+                        for ce in store.get_edges_by_target(e.target_qualified):
+                            if ce.kind == EdgeKind.CONTAINS:
+                                container = store.get_node(ce.source_qualified)
+                                if container and container.kind == "Class":
+                                    callee_class_qn = ce.source_qualified
+                                    break
+                        if callee_class_qn and callee_class_qn != qn:
+                            if callee_class_qn not in called_classes:
+                                called_classes[callee_class_qn] = {
+                                    **node_to_dict(store.get_node(callee_class_qn)),
+                                    "via_methods": [],
+                                }
+                            called_classes[callee_class_qn]["via_methods"].append({
+                                "source_method": method_qn,
+                                "callee_method": e.target_qualified,
+                            })
+                            edges_out.append(edge_to_dict(e))
+
+            results.extend(called_classes.values())
 
         elif pattern == "file_summary":
             abs_path = str(root / target)

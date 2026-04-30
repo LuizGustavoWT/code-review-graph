@@ -1,0 +1,25 @@
+=== Cross-task Integration Test ===
+
+Edge kinds in graph: ['CALLS', 'CONTAINS', 'IMPORTS_FROM', 'INHERITS']
+CALLS: True
+CONTAINS: True
+DECORATED_BY: False
+USES_TYPE: False
+INHERITS: True
+IMPORTS_FROM: True
+PASS: Basic edge kinds present
+
+CLASS_USES for /tmp/crg_integration_zervbh46/repo/auth.py::AuthService: ['/tmp/crg_integration_zervbh46/repo/database.py::Database']
+PASS: CLASS_USES correctly derives Database usage
+
+MODULE_DEPENDS_ON for /tmp/crg_integration_zervbh46/repo/auth.py: ['/tmp/crg_integration_zervbh46/repo/base.py', '/tmp/crg_integration_zervbh46/repo/database.py']
+PASS: MODULE_DEPENDS_ON correctly derives both deps
+
+class_callees_of for /tmp/crg_integration_zervbh46/repo/auth.py::AuthService: ['/tmp/crg_integration_zervbh46/repo/database.py::Database']
+PASS: class_callees_of finds Database
+
+class_callers_of for /tmp/crg_integration_zervbh46/repo/database.py::Database: ['/tmp/crg_integration_zervbh46/repo/auth.py::AuthService']
+PASS: class_callers_of finds AuthService
+
+PASS: dependency_matrix class_level executed
+PASS: dependency_matrix module_level executed

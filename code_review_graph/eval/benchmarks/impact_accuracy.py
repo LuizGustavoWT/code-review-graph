@@ -6,6 +6,8 @@ import logging
 import subprocess
 from pathlib import Path
 
+from ...constants import EdgeKind
+
 logger = logging.getLogger(__name__)
 
 
@@ -64,7 +66,7 @@ def run(repo_path: Path, store, config: dict) -> list[dict]:
             nodes = store.get_nodes_by_file(f)
             for node in nodes:
                 for edge in store.get_edges_by_target(node.qualified_name):
-                    if edge.kind in ("CALLS", "IMPORTS_FROM"):
+                    if edge.kind in (EdgeKind.CALLS, EdgeKind.IMPORTS_FROM):
                         src_qual = edge.source_qualified
                         src_file = (
                             src_qual.split("::")[0] if "::" in src_qual else ""

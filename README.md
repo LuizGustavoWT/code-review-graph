@@ -404,6 +404,8 @@ pip install code-review-graph[all]                 # All optional dependencies
 | `CRG_OPENAI_DIMENSION` | Pin embedding dimension (v3 models support reduction) | - |
 | `NO_COLOR` | If set, disables ANSI colors in terminal | - |
 | `CRG_SERIAL_PARSE` | If `1`, disables parallel parsing (use for debugging) | - |
+| `CRG_DERIVED_EDGES` | Enable on-the-fly derived edge computation (CLASS_USES, MODULE_DEPENDS_ON) | `1` |
+| `CRG_USES_TYPE` | Extract USES_TYPE edges for type annotations during parse | `1` |
 
 OpenAI-compatible embeddings (real OpenAI, Azure, or any self-hosted gateway like
 new-api / LiteLLM / vLLM / LocalAI / Ollama in openai mode) need no extra install —

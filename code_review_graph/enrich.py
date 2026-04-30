@@ -15,6 +15,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .constants import EdgeKind
+
 logger = logging.getLogger(__name__)
 
 # Flags that consume the next token in grep/rg commands
@@ -133,7 +135,7 @@ def _format_node_context(
     callers: list[str] = []
     seen: set[str] = set()
     for e in store.get_edges_by_target(qn):
-        if e.kind == "CALLS" and len(callers) < 5:
+        if e.kind == EdgeKind.CALLS and len(callers) < 5:
             c = store.get_node(e.source_qualified)
             if c and c.name not in seen:
                 seen.add(c.name)
@@ -145,7 +147,7 @@ def _format_node_context(
     callees: list[str] = []
     seen.clear()
     for e in store.get_edges_by_source(qn):
-        if e.kind == "CALLS" and len(callees) < 5:
+        if e.kind == EdgeKind.CALLS and len(callees) < 5:
             c = store.get_node(e.target_qualified)
             if c and c.name not in seen:
                 seen.add(c.name)
@@ -161,7 +163,7 @@ def _format_node_context(
     # Tests
     tests: list[str] = []
     for e in store.get_edges_by_target(qn):
-        if e.kind == "TESTED_BY" and len(tests) < 3:
+        if e.kind == EdgeKind.TESTED_BY and len(tests) < 3:
             t = store.get_node(e.source_qualified)
             if t:
                 tests.append(t.name)

@@ -460,7 +460,7 @@ class TestChanges:
             patch("code_review_graph.tools.review._get_store") as mock_get_store,
             patch("code_review_graph.tools.review.get_changed_files", return_value=["app.py"]),
             patch(
-                "code_review_graph.tools.review.parse_git_diff_ranges",
+                "code_review_graph.tools.review.parse_diff_ranges",
                 return_value={"app.py": [(1, 10)]},
             ),
         ):

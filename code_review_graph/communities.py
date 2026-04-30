@@ -11,6 +11,7 @@ import re
 from collections import Counter, defaultdict
 from typing import Any
 
+from .constants import EdgeKind
 from .graph import GraphEdge, GraphNode, GraphStore, _sanitize_name
 
 logger = logging.getLogger(__name__)
@@ -32,13 +33,13 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 EDGE_WEIGHTS: dict[str, float] = {
-    "CALLS": 1.0,
-    "IMPORTS_FROM": 0.5,
-    "INHERITS": 0.8,
-    "IMPLEMENTS": 0.7,
-    "CONTAINS": 0.3,
-    "TESTED_BY": 0.4,
-    "DEPENDS_ON": 0.6,
+    EdgeKind.CALLS: 1.0,
+    EdgeKind.IMPORTS_FROM: 0.5,
+    EdgeKind.INHERITS: 0.8,
+    EdgeKind.IMPLEMENTS: 0.7,
+    EdgeKind.CONTAINS: 0.3,
+    EdgeKind.TESTED_BY: 0.4,
+    EdgeKind.DEPENDS_ON: 0.6,
 }
 
 # Common words to filter when generating community names
@@ -805,7 +806,7 @@ def get_architecture_overview(store: GraphStore) -> dict[str, Any]:
     for e in all_edges:
         # TESTED_BY edges are expected cross-community coupling (test → code),
         # not an architectural smell.
-        if e.kind == "TESTED_BY":
+        if e.kind == EdgeKind.TESTED_BY:
             continue
         src_comm = node_to_community.get(e.source_qualified)
         tgt_comm = node_to_community.get(e.target_qualified)

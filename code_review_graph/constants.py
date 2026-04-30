@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from enum import Enum
 
 SECURITY_KEYWORDS: frozenset[str] = frozenset({
     "auth", "login", "password", "token", "session", "crypt", "secret",
@@ -21,3 +22,38 @@ MAX_SEARCH_RESULTS = int(os.environ.get("CRG_MAX_SEARCH_RESULTS", "20"))
 
 # BFS engine: "sql" (SQLite recursive CTE) or "networkx" (Python-side BFS)
 BFS_ENGINE = os.environ.get("CRG_BFS_ENGINE", "sql")
+
+# Config toggles
+CRG_USES_TYPE = os.environ.get("CRG_USES_TYPE", "1")  # Extract USES_TYPE edges during parse
+CRG_DERIVED_EDGES = os.environ.get("CRG_DERIVED_EDGES", "1")  # Enable derived edge computation
+
+
+class EdgeKind(str, Enum):
+    """Edge kind constants for the code knowledge graph.
+
+    All edge types used in the graph database.  The ``str`` mixin lets
+    instances be used directly wherever a plain string is expected
+    (SQL parameters, comparisons, etc.).
+    """
+
+    CALLS = "CALLS"
+    IMPORTS_FROM = "IMPORTS_FROM"
+    INHERITS = "INHERITS"
+    IMPLEMENTS = "IMPLEMENTS"
+    CONTAINS = "CONTAINS"
+    TESTED_BY = "TESTED_BY"
+    DEPENDS_ON = "DEPENDS_ON"
+    REFERENCES = "REFERENCES"
+    DECORATED_BY = "DECORATED_BY"
+    USES_TYPE = "USES_TYPE"
+    CLASS_USES = "CLASS_USES"
+    MODULE_DEPENDS_ON = "MODULE_DEPENDS_ON"
+
+
+# ---------------------------------------------------------------------------
+# Enricher registry: language → enricher-backend lookup for CLI `enrich` cmd
+# ---------------------------------------------------------------------------
+ENRICHER_MAP: dict[str, str] = {
+    "rescript": "rescript",
+    "python": "jedi",
+}

@@ -16,6 +16,7 @@ from typing import NamedTuple, Optional
 
 import tree_sitter_language_pack as tslp
 
+from .constants import CRG_USES_TYPE, EdgeKind
 from .tsconfig_resolver import TsconfigResolver
 
 
@@ -614,6 +615,126 @@ def _is_test_function(
     return False
 
 
+# ---------------------------------------------------------------------------
+# Built-in types to skip when emitting USES_TYPE edges
+# ---------------------------------------------------------------------------
+_BUILTIN_TYPES: frozenset[str] = frozenset({
+    "int", "str", "bool", "float", "None", "void", "string", "number",
+    "any", "object", "list", "dict", "tuple", "set",
+    "Array", "Promise", "Map", "Set", "Record",
+})
+
+
+def _split_by_commas(text: str) -> list[str]:
+    """Split *text* by top-level commas, respecting nested ``[]<>()`` brackets.
+
+    This is used to split parameter lists without breaking generic type arguments
+    (e.g. ``dict[str, int]`` stays as one piece).
+    """
+    parts: list[str] = []
+    depth = 0
+    current: list[str] = []
+    for ch in text:
+        if ch in ("[", "<", "("):
+            depth += 1
+            current.append(ch)
+        elif ch in ("]", ">", ")"):
+            depth -= 1
+            current.append(ch)
+        elif ch == "," and depth == 0:
+            parts.append("".join(current).strip())
+            current = []
+        else:
+            current.append(ch)
+    parts.append("".join(current).strip())
+    return [p for p in parts if p]
+
+
+def _split_union(text: str) -> list[str]:
+    """Split *text* by ``|`` union operators, respecting nested brackets.
+
+    ``\"int | None | AuthService\"`` → ``[\"int\", \"None\", \"AuthService\"]``
+    """
+    parts: list[str] = []
+    depth = 0
+    current: list[str] = []
+    for ch in text:
+        if ch in ("[", "<", "("):
+            depth += 1
+            current.append(ch)
+        elif ch in ("]", ">", ")"):
+            depth -= 1
+            current.append(ch)
+        elif ch == "|" and depth == 0:
+            parts.append("".join(current).strip())
+            current = []
+        else:
+            current.append(ch)
+    parts.append("".join(current).strip())
+    return [p for p in parts if p]
+
+
+def _extract_type_names(type_text: str) -> list[str]:
+    """Extract non-builtin type names from a type annotation string.
+
+    Handles:
+    - Simple types: ``AuthService`` → ``[\"AuthService\"]``
+    - Union types: ``int | None | AuthService`` → ``[\"AuthService\"]``
+    - Generic types: ``List[User]`` → ``[\"List\", \"User\"]``
+    - Nested generics: ``dict[str, List[User]]`` → ``[\"dict\", \"List\", \"User\"]``
+
+    Built-in types (``int``, ``str``, …) are always omitted.
+    """
+    result: list[str] = []
+    for part in _split_union(type_text):
+        part = part.strip()
+        if not part:
+            continue
+        # Handle generic types: Foo[Bar, Baz]
+        if "[" in part:
+            bracket_idx = part.index("[")
+            container = part[:bracket_idx].strip()
+            if container and container not in _BUILTIN_TYPES:
+                result.append(container)
+            # Extract inner types recursively
+            inner = part[bracket_idx + 1 : part.rindex("]")] if "]" in part else ""
+            if inner:
+                result.extend(_extract_type_names(inner))
+        elif part not in _BUILTIN_TYPES:
+            result.append(part)
+    return result
+
+
+def _extract_param_types(params_text: str) -> list[str]:
+    """Extract type annotation texts from a parameter list string.
+
+    ``\"(url: str, timeout: int = 30, service: AuthService, token: str)\"``
+    → ``[\"str\", \"int\", \"AuthService\", \"str\"]``
+    """
+    inner = params_text.strip()
+    if inner.startswith("(") and inner.endswith(")"):
+        inner = inner[1:-1]
+
+    types: list[str] = []
+    for part in _split_by_commas(inner):
+        part = part.strip()
+        if not part:
+            continue
+        # Skip self/cls parameters
+        if part in ("self", "cls") or part.startswith("self,") or part.startswith("cls,"):
+            continue
+        if ":" in part:
+            after_colon = part.split(":", 1)[1].strip()
+            # Strip default value if present (after =)
+            if "=" in after_colon:
+                type_str = after_colon.split("=", 1)[0].strip()
+            else:
+                type_str = after_colon
+            if type_str:
+                types.append(type_str)
+    return types
+
+
 def file_hash(path: Path) -> str:
     """SHA-256 hash of file contents."""
     return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -783,9 +904,9 @@ class CodeParser:
                     qn = self._qualify(n.name, n.file_path, n.parent_name)
                     test_qnames.add(qn)
             for edge in list(edges):
-                if edge.kind == "CALLS" and edge.source in test_qnames:
+                if edge.kind == EdgeKind.CALLS and edge.source in test_qnames:
                     edges.append(EdgeInfo(
-                        kind="TESTED_BY",
+                        kind=EdgeKind.TESTED_BY,
                         source=edge.target,
                         target=edge.source,
                         file_path=edge.file_path,
@@ -894,9 +1015,9 @@ class CodeParser:
                     qn = self._qualify(n.name, n.file_path, n.parent_name)
                     test_qnames.add(qn)
             for edge in list(all_edges):
-                if edge.kind == "CALLS" and edge.source in test_qnames:
+                if edge.kind == EdgeKind.CALLS and edge.source in test_qnames:
                     all_edges.append(EdgeInfo(
-                        kind="TESTED_BY",
+                        kind=EdgeKind.TESTED_BY,
                         source=edge.target,
                         target=edge.source,
                         file_path=edge.file_path,
@@ -1022,11 +1143,11 @@ class CodeParser:
                     test_qnames.add(qn)
             for edge in list(all_edges):
                 if (
-                    edge.kind == "CALLS"
+                    edge.kind == EdgeKind.CALLS
                     and edge.source in test_qnames
                 ):
                     all_edges.append(EdgeInfo(
-                        kind="TESTED_BY",
+                        kind=EdgeKind.TESTED_BY,
                         source=edge.target,
                         target=edge.source,
                         file_path=edge.file_path,
@@ -1156,7 +1277,7 @@ class CodeParser:
                     for match in _SQL_TABLE_RE.finditer(cell.source):
                         table_name = match.group(1).replace("`", "")
                         all_edges.append(EdgeInfo(
-                            kind="IMPORTS_FROM",
+                            kind=EdgeKind.IMPORTS_FROM,
                             source=file_path_str,
                             target=table_name,
                             file_path=file_path_str,
@@ -1239,9 +1360,9 @@ class CodeParser:
                     qn = self._qualify(n.name, n.file_path, n.parent_name)
                     test_qnames.add(qn)
             for edge in list(all_edges):
-                if edge.kind == "CALLS" and edge.source in test_qnames:
+                if edge.kind == EdgeKind.CALLS and edge.source in test_qnames:
                     all_edges.append(EdgeInfo(
-                        kind="TESTED_BY",
+                        kind=EdgeKind.TESTED_BY,
                         source=edge.target,
                         target=edge.source,
                         file_path=edge.file_path,
@@ -1527,7 +1648,7 @@ class CodeParser:
             snippet = text[look_start:off]
             for attr in _RESCRIPT_MODULE_ATTR_RE.finditer(snippet):
                 edges.append(EdgeInfo(
-                    kind="IMPORTS_FROM",
+                    kind=EdgeKind.IMPORTS_FROM,
                     source=file_path_str,
                     target=attr.group(1),
                     file_path=file_path_str,
@@ -1562,7 +1683,7 @@ class CodeParser:
             off = match.start()
             line = offset_to_line(off)
             edges.append(EdgeInfo(
-                kind="IMPORTS_FROM",
+                kind=EdgeKind.IMPORTS_FROM,
                 source=file_path_str,
                 target=target,
                 file_path=file_path_str,
@@ -1585,7 +1706,7 @@ class CodeParser:
                 continue
             line = offset_to_line(off)
             edges.append(EdgeInfo(
-                kind="IMPORTS_FROM",
+                kind=EdgeKind.IMPORTS_FROM,
                 source=file_path_str,
                 target=target,
                 file_path=file_path_str,
@@ -1606,7 +1727,7 @@ class CodeParser:
                 root = target.split(".", 1)[0]
                 line = offset_to_line(off)
                 edges.append(EdgeInfo(
-                    kind="IMPORTS_FROM",
+                    kind=EdgeKind.IMPORTS_FROM,
                     source=file_path_str,
                     target=root,
                     file_path=file_path_str,
@@ -1625,7 +1746,7 @@ class CodeParser:
                         break
                 if caller is not None:
                     edges.append(EdgeInfo(
-                        kind="CALLS",
+                        kind=EdgeKind.CALLS,
                         source=self._qualify(
                             caller, file_path_str, caller_parent,
                         ),
@@ -1664,7 +1785,7 @@ class CodeParser:
                 line = offset_to_line(off)
                 source_qn = self._qualify(caller, file_path_str, caller_parent)
                 edges.append(EdgeInfo(
-                    kind="CALLS",
+                    kind=EdgeKind.CALLS,
                     source=source_qn,
                     target=target,
                     file_path=file_path_str,
@@ -1675,7 +1796,7 @@ class CodeParser:
         for n in nodes:
             if n.kind in ("Function", "Type", "Test") and n.parent_name:
                 edges.append(EdgeInfo(
-                    kind="CONTAINS",
+                    kind=EdgeKind.CONTAINS,
                     source=self._qualify(n.parent_name, file_path_str, None),
                     target=self._qualify(n.name, file_path_str, n.parent_name),
                     file_path=file_path_str,
@@ -1704,7 +1825,7 @@ class CodeParser:
         seen_imports: set[tuple[str, str]] = set()
         deduped_edges: list[EdgeInfo] = []
         for e in edges:
-            if e.kind == "IMPORTS_FROM":
+            if e.kind == EdgeKind.IMPORTS_FROM:
                 key = (e.source, e.target)
                 if key in seen_imports:
                     continue
@@ -1721,9 +1842,9 @@ class CodeParser:
                     qn = self._qualify(n.name, n.file_path, n.parent_name)
                     test_qnames.add(qn)
             for edge in list(edges):
-                if edge.kind == "CALLS" and edge.source in test_qnames:
+                if edge.kind == EdgeKind.CALLS and edge.source in test_qnames:
                     edges.append(EdgeInfo(
-                        kind="TESTED_BY",
+                        kind=EdgeKind.TESTED_BY,
                         source=edge.target,
                         target=edge.source,
                         file_path=edge.file_path,
@@ -1758,7 +1879,7 @@ class CodeParser:
 
         resolved: list[EdgeInfo] = []
         for edge in edges:
-            if edge.kind in ("CALLS", "REFERENCES") and "::" not in edge.target:
+            if edge.kind in (EdgeKind.CALLS, EdgeKind.REFERENCES) and "::" not in edge.target:
                 if edge.target in symbols:
                     edge = EdgeInfo(
                         kind=edge.kind,
@@ -2077,7 +2198,7 @@ class CodeParser:
             ))
             # CONTAINS file -> module
             edges.append(EdgeInfo(
-                kind="CONTAINS",
+                kind=EdgeKind.CONTAINS,
                 source=file_path,
                 target=qualified,
                 file_path=file_path,
@@ -2128,7 +2249,7 @@ class CodeParser:
                 if enclosing_class else file_path
             )
             edges.append(EdgeInfo(
-                kind="CONTAINS",
+                kind=EdgeKind.CONTAINS,
                 source=container,
                 target=qualified,
                 file_path=file_path,
@@ -2151,7 +2272,7 @@ class CodeParser:
                     mod = self._elixir_module_name(sub)
                     if mod is not None:
                         edges.append(EdgeInfo(
-                            kind="IMPORTS_FROM",
+                            kind=EdgeKind.IMPORTS_FROM,
                             source=file_path,
                             target=mod,
                             file_path=file_path,
@@ -2395,7 +2516,7 @@ class CodeParser:
             # Try to resolve relative paths to real files
             resolved = self._resolve_module_to_file(target, file_path, "bash")
             edges.append(EdgeInfo(
-                kind="IMPORTS_FROM",
+                kind=EdgeKind.IMPORTS_FROM,
                 source=file_path,
                 target=resolved if resolved else target,
                 file_path=file_path,
@@ -2465,7 +2586,7 @@ class CodeParser:
                         if enclosing_func else file_path
                     )
                     edges.append(EdgeInfo(
-                        kind="CALLS",
+                        kind=EdgeKind.CALLS,
                         source=src_qn,
                         target=call_name,
                         file_path=file_path,
@@ -2577,7 +2698,7 @@ class CodeParser:
                     req_target, file_path, language,
                 )
                 edges.append(EdgeInfo(
-                    kind="IMPORTS_FROM",
+                    kind=EdgeKind.IMPORTS_FROM,
                     source=file_path,
                     target=resolved if resolved else req_target,
                     file_path=file_path,
@@ -2645,7 +2766,7 @@ class CodeParser:
                         req_target, file_path, language,
                     )
                     edges.append(EdgeInfo(
-                        kind="IMPORTS_FROM",
+                        kind=EdgeKind.IMPORTS_FROM,
                         source=file_path,
                         target=resolved if resolved else req_target,
                         file_path=file_path,
@@ -2677,7 +2798,7 @@ class CodeParser:
                     if enclosing_class else file_path
                 )
                 edges.append(EdgeInfo(
-                    kind="CONTAINS",
+                    kind=EdgeKind.CONTAINS,
                     source=container,
                     target=qualified,
                     file_path=file_path,
@@ -2756,7 +2877,7 @@ class CodeParser:
         # CONTAINS: table -> method
         container = self._qualify(table_name, file_path, None)
         edges.append(EdgeInfo(
-            kind="CONTAINS",
+            kind=EdgeKind.CONTAINS,
             source=container,
             target=qualified,
             file_path=file_path,
@@ -2874,7 +2995,7 @@ class CodeParser:
                 if enclosing_class else file_path
             )
             edges.append(EdgeInfo(
-                kind="CONTAINS",
+                kind=EdgeKind.CONTAINS,
                 source=container,
                 target=qualified,
                 file_path=file_path,
@@ -2944,7 +3065,7 @@ class CodeParser:
             if enclosing_class else file_path
         )
         edges.append(EdgeInfo(
-            kind="CONTAINS",
+            kind=EdgeKind.CONTAINS,
             source=container,
             target=qualified,
             file_path=file_path,
@@ -2998,6 +3119,26 @@ class CodeParser:
             elif child.type == "protocol_declaration":
                 extra["swift_kind"] = "protocol"
 
+        # Extract decorators for DECORATED_BY edges
+        deco_class_edges: list[tuple[str, int]] = []
+        for sub in child.children:
+            # Java/Kotlin/C#: annotations inside a modifiers child
+            if sub.type == "modifiers":
+                for mod in sub.children:
+                    if mod.type in ("annotation", "marker_annotation"):
+                        text = mod.text.decode("utf-8", errors="replace")
+                        stripped = text.lstrip("@").strip()
+                        bare = stripped.split("(")[0].strip()
+                        deco_class_edges.append((bare, mod.start_point[0] + 1))
+        # Python: check parent decorated_definition for decorator siblings
+        if child.parent and child.parent.type == "decorated_definition":
+            for sib in child.parent.children:
+                if sib.type == "decorator":
+                    text = sib.text.decode("utf-8", errors="replace")
+                    stripped = text.lstrip("@").strip()
+                    bare = stripped.split("(")[0].strip()
+                    deco_class_edges.append((bare, sib.start_point[0] + 1))
+
         node = NodeInfo(
             kind="Class",
             name=name,
@@ -3010,23 +3151,33 @@ class CodeParser:
         )
         nodes.append(node)
 
+        qualified_class = self._qualify(name, file_path, enclosing_class)
+
         # CONTAINS edge
         edges.append(EdgeInfo(
-            kind="CONTAINS",
+            kind=EdgeKind.CONTAINS,
             source=file_path,
-            target=self._qualify(name, file_path, enclosing_class),
+            target=qualified_class,
             file_path=file_path,
             line=child.start_point[0] + 1,
         ))
+
+        # DECORATED_BY edges
+        for deco_name, deco_line in deco_class_edges:
+            edges.append(EdgeInfo(
+                kind=EdgeKind.DECORATED_BY,
+                source=qualified_class,
+                target=deco_name,
+                file_path=file_path,
+                line=deco_line,
+            ))
 
         # Inheritance edges
         bases = self._get_bases(child, language, source)
         for base in bases:
             edges.append(EdgeInfo(
-                kind="INHERITS",
-                source=self._qualify(
-                    name, file_path, enclosing_class,
-                ),
+                kind=EdgeKind.INHERITS,
+                source=qualified_class,
                 target=base,
                 file_path=file_path,
                 line=child.start_point[0] + 1,
@@ -3071,22 +3222,29 @@ class CodeParser:
             if receiver_type:
                 enclosing_class = receiver_type
 
-        # Extract annotations/decorators for test detection
+        # Extract annotations/decorators for test detection and DECORATED_BY edges
         decorators: tuple[str, ...] = ()
         deco_list: list[str] = []
+        decorator_edges: list[tuple[str, int]] = []  # (bare_name, line)
         for sub in child.children:
             # Java/Kotlin/C#: annotations inside a modifiers child
             if sub.type == "modifiers":
                 for mod in sub.children:
                     if mod.type in ("annotation", "marker_annotation"):
                         text = mod.text.decode("utf-8", errors="replace")
-                        deco_list.append(text.lstrip("@").strip())
+                        stripped = text.lstrip("@").strip()
+                        deco_list.append(stripped)
+                        bare = stripped.split("(")[0].strip()
+                        decorator_edges.append((bare, mod.start_point[0] + 1))
         # Python: check parent decorated_definition for decorator siblings
         if child.parent and child.parent.type == "decorated_definition":
             for sib in child.parent.children:
                 if sib.type == "decorator":
                     text = sib.text.decode("utf-8", errors="replace")
-                    deco_list.append(text.lstrip("@").strip())
+                    stripped = text.lstrip("@").strip()
+                    deco_list.append(stripped)
+                    bare = stripped.split("(")[0].strip()
+                    decorator_edges.append((bare, sib.start_point[0] + 1))
         if deco_list:
             decorators = tuple(deco_list)
 
@@ -3142,12 +3300,48 @@ class CodeParser:
                 else file_path
             )
         edges.append(EdgeInfo(
-            kind="CONTAINS",
+            kind=EdgeKind.CONTAINS,
             source=container,
             target=qualified,
             file_path=file_path,
             line=child.start_point[0] + 1,
         ))
+
+        # DECORATED_BY edges
+        for deco_name, deco_line in decorator_edges:
+            edges.append(EdgeInfo(
+                kind=EdgeKind.DECORATED_BY,
+                source=qualified,
+                target=deco_name,
+                file_path=file_path,
+                line=deco_line,
+            ))
+
+        # USES_TYPE edges for parameter and return type annotations
+        if CRG_USES_TYPE != "0":
+            if params:
+                for raw_type in _extract_param_types(params):
+                    for resolved in _extract_type_names(raw_type):
+                        edges.append(EdgeInfo(
+                            kind=EdgeKind.USES_TYPE,
+                            source=qualified,
+                            target=resolved,
+                            file_path=file_path,
+                            line=child.start_point[0] + 1,
+                            extra={"role": "param"},
+                        ))
+            if ret_type:
+                # Strip leading type annotation markers (e.g. ": " for TS/JS)
+                clean_ret = ret_type.lstrip(":").lstrip("->").strip()
+                for resolved in _extract_type_names(clean_ret):
+                    edges.append(EdgeInfo(
+                        kind=EdgeKind.USES_TYPE,
+                        source=qualified,
+                        target=resolved,
+                        file_path=file_path,
+                        line=child.start_point[0] + 1,
+                        extra={"role": "return"},
+                    ))
 
         # Solidity: modifier invocations on functions -> CALLS edges
         if language == "solidity":
@@ -3156,7 +3350,7 @@ class CodeParser:
                     for ident in sub.children:
                         if ident.type == "identifier":
                             edges.append(EdgeInfo(
-                                kind="CALLS",
+                                kind=EdgeKind.CALLS,
                                 source=qualified,
                                 target=ident.text.decode(
                                     "utf-8", errors="replace",
@@ -3190,7 +3384,7 @@ class CodeParser:
                 imp_target, file_path, language,
             )
             edges.append(EdgeInfo(
-                kind="IMPORTS_FROM",
+                kind=EdgeKind.IMPORTS_FROM,
                 source=file_path,
                 target=resolved if resolved else imp_target,
                 file_path=file_path,
@@ -3271,7 +3465,7 @@ class CodeParser:
                 else file_path
             )
             edges.append(EdgeInfo(
-                kind="CONTAINS",
+                kind=EdgeKind.CONTAINS,
                 source=container,
                 target=qualified,
                 file_path=file_path,
@@ -3297,8 +3491,18 @@ class CodeParser:
                 call_name, file_path, language,
                 import_map or {}, defined_names or set(),
             )
+            # Try attribute-based resolution when the call name was not
+            # resolved by the basic path.  Handles cases like
+            # ``import X.Y.Z; X.Y.Z.func()`` where the call name is just
+            # ``func`` but the object part matches an import_map entry.
+            if target == call_name and import_map:
+                attr_target = self._resolve_attribute_call(
+                    child, call_name, file_path, language, import_map,
+                )
+                if attr_target:
+                    target = attr_target
             edges.append(EdgeInfo(
-                kind="CALLS",
+                kind=EdgeKind.CALLS,
                 source=caller,
                 target=target,
                 file_path=file_path,
@@ -3336,7 +3540,7 @@ class CodeParser:
             if enclosing_func else file_path
         )
         edges.append(EdgeInfo(
-            kind="CALLS",
+            kind=EdgeKind.CALLS,
             source=caller,
             target=target,
             file_path=file_path,
@@ -3483,7 +3687,7 @@ class CodeParser:
             name, file_path, language, import_map, defined_names,
         )
         edges.append(EdgeInfo(
-            kind="REFERENCES",
+            kind=EdgeKind.REFERENCES,
             source=caller,
             target=target,
             file_path=file_path,
@@ -3626,7 +3830,7 @@ class CodeParser:
                                 enclosing_class,
                             )
                             edges.append(EdgeInfo(
-                                kind="CALLS",
+                                kind=EdgeKind.CALLS,
                                 source=caller,
                                 target=ident.text.decode(
                                     "utf-8", errors="replace",
@@ -3679,7 +3883,7 @@ class CodeParser:
                     },
                 ))
                 edges.append(EdgeInfo(
-                    kind="CONTAINS",
+                    kind=EdgeKind.CONTAINS,
                     source=self._qualify(
                         enclosing_class, file_path, None,
                     ),
@@ -3724,7 +3928,7 @@ class CodeParser:
                     else file_path
                 )
                 edges.append(EdgeInfo(
-                    kind="CONTAINS",
+                    kind=EdgeKind.CONTAINS,
                     source=container,
                     target=qualified,
                     file_path=file_path,
@@ -3752,7 +3956,7 @@ class CodeParser:
                     else file_path
                 )
                 edges.append(EdgeInfo(
-                    kind="DEPENDS_ON",
+                    kind=EdgeKind.DEPENDS_ON,
                     source=source_name,
                     target=lib_name,
                     file_path=file_path,
@@ -3878,6 +4082,31 @@ class CodeParser:
                             # Last name is the alias (local name)
                             if names:
                                 import_map[names[-1]] = module
+
+            elif node.type == "import_statement":
+                # import X, X.Y.Z → add module to import_map
+                # import X.Y.Z as A → map alias to module
+                for child in node.children:
+                    if child.type == "dotted_name":
+                        module = child.text.decode("utf-8", errors="replace")
+                        import_map[module] = module
+                        # Also add parent components so partial references
+                        # like X.Y.func() can match when only the full module
+                        # was registered above.
+                        parts = module.split(".")
+                        for i in range(len(parts) - 1):
+                            parent = ".".join(parts[:i + 1])
+                            if parent not in import_map:
+                                import_map[parent] = module
+                    elif child.type == "aliased_import":
+                        # import X.Y.Z as A → {A: X.Y.Z}
+                        names = [
+                            sub.text.decode("utf-8", errors="replace")
+                            for sub in child.children
+                            if sub.type in ("identifier", "dotted_name")
+                        ]
+                        if len(names) >= 2:
+                            import_map[names[-1]] = names[0]
 
         elif language in ("javascript", "typescript", "tsx"):
             # import { A, B } from './path' → {A: ./path, B: ./path}
@@ -4098,6 +4327,64 @@ class CodeParser:
             if resolved:
                 return resolved
         return call_name
+
+    def _resolve_attribute_call(
+        self,
+        call_node,
+        call_name: str,
+        file_path: str,
+        language: str,
+        import_map: dict[str, str],
+    ) -> Optional[str]:
+        """Resolve an attribute-style call (obj.method()) via import_map.
+
+        Handles cases like ``import X.Y.Z; X.Y.Z.func()`` where the parser
+        extracts only ``func`` as the call name.  This method extracts the
+        object part (``X.Y.Z``) and checks it against the import_map.
+
+        Returns a qualified name if the object matches an import, else None.
+        """
+        if not call_node.children:
+            return None
+        first = call_node.children[0]
+        # Only applies to attribute/member-expression calls
+        member_types = (
+            "attribute", "member_expression",
+            "field_expression", "selector_expression",
+            "navigation_expression",
+        )
+        if first.type not in member_types:
+            return None
+
+        # Extract the object part: e.g. "X.Y.Z" from "X.Y.Z.func"
+        full_text = first.text.decode("utf-8", errors="replace")
+        last_dot = full_text.rfind(".")
+        if last_dot < 0:
+            return None
+        obj_part = full_text[:last_dot]
+
+        # Walk the object part components trying import_map.
+        # Try full match first, then parent components: X.Y.Z → X.Y → X
+        if obj_part in import_map:
+            module = import_map[obj_part]
+            resolved = self._resolve_imported_symbol(
+                call_name, module, file_path, language,
+            )
+            if resolved:
+                return resolved
+
+        parts = obj_part.split(".")
+        for i in range(len(parts) - 1, 0, -1):
+            parent = ".".join(parts[:i])
+            if parent in import_map:
+                module = import_map[parent]
+                resolved = self._resolve_imported_symbol(
+                    call_name, module, file_path, language,
+                )
+                if resolved:
+                    return resolved
+
+        return None
 
     def _resolve_imported_symbol(
         self,
@@ -5022,7 +5309,7 @@ class CodeParser:
                 if enclosing_class else file_path
             )
             edges.append(EdgeInfo(
-                kind="CONTAINS",
+                kind=EdgeKind.CONTAINS,
                 source=container,
                 target=qualified,
                 file_path=file_path,
@@ -5065,7 +5352,7 @@ class CodeParser:
             imports = self._extract_import(node, language, source)
             for imp_target in imports:
                 edges.append(EdgeInfo(
-                    kind="IMPORTS_FROM",
+                    kind=EdgeKind.IMPORTS_FROM,
                     source=file_path,
                     target=imp_target,
                     file_path=file_path,
@@ -5129,7 +5416,7 @@ class CodeParser:
             parent_name=enclosing_class,
         ))
         edges.append(EdgeInfo(
-            kind="CONTAINS",
+            kind=EdgeKind.CONTAINS,
             source=file_path,
             target=qualified,
             file_path=file_path,
@@ -5173,7 +5460,7 @@ class CodeParser:
                 params=params,
             ))
             edges.append(EdgeInfo(
-                kind="CONTAINS",
+                kind=EdgeKind.CONTAINS,
                 source=self._qualify(class_name, file_path, None),
                 target=qualified,
                 file_path=file_path,

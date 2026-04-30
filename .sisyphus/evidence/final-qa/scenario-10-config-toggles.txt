@@ -1,0 +1,5 @@
+CRG_USES_TYPE env = <unset>
+CRG_DERIVED_EDGES env = <unset>
+CRG_USES_TYPE loaded = 1
+CRG_DERIVED_EDGES loaded = 1
+PASS: Config toggles and EdgeKind constants present

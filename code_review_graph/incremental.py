@@ -17,6 +17,7 @@ import time
 from pathlib import Path, PurePosixPath
 from typing import Callable, Optional
 
+from .constants import EdgeKind
 from .graph import GraphStore
 from .parser import CodeParser
 
@@ -35,6 +36,45 @@ def _run_rescript_resolver(store: GraphStore) -> Optional[dict]:
     except Exception as exc:  # noqa: BLE001 - best-effort post-pass
         logger.warning("ReScript cross-module resolver failed: %s", exc)
         return None
+
+_ENRICHERS: dict[str, Callable] = {}
+
+
+def _jedi_enricher(store: GraphStore, repo_root: Path) -> Optional[dict]:
+    """Lazy-load and run the Jedi enricher for Python."""
+    from .jedi_resolver import enrich_jedi_calls  # noqa: PLC0415 - always available
+    return enrich_jedi_calls(store, repo_root)
+
+
+_ENRICHERS["python"] = _jedi_enricher
+_ENRICHERS["rescript"] = lambda s, r: _run_rescript_resolver(s)
+
+
+def _run_enricher(language: str, store: GraphStore, repo_root: Path) -> Optional[dict]:
+    """Run a registered enricher for *language*.
+
+    Looks up the enricher in ``_ENRICHERS``, calls it inside a
+    try/except, and logs the result.  Returns the stats dict on
+    success, ``None`` on error, or a skipped-dict when the enricher
+    is not registered or ``CRG_SKIP_ENRICHMENT`` is set.
+    """
+    if os.environ.get("CRG_SKIP_ENRICHMENT"):
+        return {"skipped": True, "reason": "CRG_SKIP_ENRICHMENT"}
+
+    enricher = _ENRICHERS.get(language)
+    if enricher is None:
+        logger.info("No enricher registered for language '%s'", language)
+        return {"skipped": True, "reason": f"no enricher for '{language}'"}
+
+    try:
+        stats = enricher(store, repo_root)
+        if stats:
+            logger.info("Enricher '%s': %s", language, stats)
+        return stats
+    except Exception as exc:  # noqa: BLE001 - best-effort post-pass
+        logger.warning("Enricher '%s' failed: %s", language, exc)
+        return None
+
 
 # Default ignore patterns (in addition to .gitignore).
 #
@@ -626,13 +666,16 @@ def _single_hop_dependents(store: GraphStore, file_path: str) -> set[str]:
     dependents: set[str] = set()
     edges = store.get_edges_by_target(file_path)
     for e in edges:
-        if e.kind == "IMPORTS_FROM":
+        if e.kind == EdgeKind.IMPORTS_FROM:
             dependents.add(e.file_path)
 
     nodes = store.get_nodes_by_file(file_path)
     for node in nodes:
         for e in store.get_edges_by_target(node.qualified_name):
-            if e.kind in ("CALLS", "IMPORTS_FROM", "INHERITS", "IMPLEMENTS"):
+            if e.kind in (
+                EdgeKind.CALLS, EdgeKind.IMPORTS_FROM, EdgeKind.INHERITS,
+                EdgeKind.IMPLEMENTS,
+            ):
                 dependents.add(e.file_path)
 
     dependents.discard(file_path)
@@ -804,13 +847,26 @@ def full_build(
     _store_vcs_metadata(repo_root, store)
     store.commit()
 
-    rescript_stats = _run_rescript_resolver(store)
+    # Resolve bare-name CALLS targets across the graph
+    bare_call_resolved = 0
+    try:
+        bare_call_resolved = store.resolve_bare_call_targets()
+        if bare_call_resolved:
+            logger.info("Resolved %d bare CALLS targets", bare_call_resolved)
+    except Exception as exc:  # noqa: BLE001 - best-effort post-pass
+        logger.warning("Bare CALLS resolution failed: %s", exc)
+
+    # Post-build enrichment for supported languages
+    python_stats = _run_enricher("python", store, repo_root)
+    rescript_stats = _run_enricher("rescript", store, repo_root)
 
     return {
         "files_parsed": len(files),
         "total_nodes": total_nodes,
         "total_edges": total_edges,
         "errors": errors,
+        "bare_call_resolved": bare_call_resolved,
+        "jedi_enrichment": python_stats,
         "rescript_resolution": rescript_stats,
     }
 
@@ -931,8 +987,16 @@ def incremental_update(
     _store_vcs_metadata(repo_root, store)
     store.commit()
 
-    # Only re-run ReScript resolver when changed files touched .res/.resi;
-    # otherwise prior resolution state is unaffected.
+    # Resolve bare-name CALLS targets after incremental update
+    bare_call_resolved = 0
+    try:
+        bare_call_resolved = store.resolve_bare_call_targets()
+        if bare_call_resolved:
+            logger.info("Resolved %d bare CALLS targets", bare_call_resolved)
+    except Exception as exc:  # noqa: BLE001 - best-effort post-pass
+        logger.warning("Bare CALLS resolution failed: %s", exc)
+
+    # Only re-run ReScript resolver when changed files touched .res/.resi
     rescript_changed = any(
         rp.endswith((".res", ".resi")) for rp in all_files
     )
@@ -947,6 +1011,7 @@ def incremental_update(
         "changed_files": list(changed_files),
         "dependent_files": list(dependent_files),
         "errors": errors,
+        "bare_call_resolved": bare_call_resolved,
         "rescript_resolution": rescript_stats,
     }
 

@@ -1,0 +1,4 @@
+class_level result keys: ['status', 'mode', 'scope', 'matrix', 'coupling_score', 'hub_classes', 'leaf_classes', 'truncated']
+PASS: dependency_matrix class_level executed
+module_level result keys: ['status', 'mode', 'scope', 'matrix', 'coupling_score', 'hub_modules', 'leaf_modules', 'truncated']
+PASS: dependency_matrix module_level executed

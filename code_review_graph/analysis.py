@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 from collections import Counter, defaultdict
 
+from .constants import EdgeKind
 from .graph import GraphStore, _sanitize_name
 
 logger = logging.getLogger(__name__)
@@ -131,7 +132,7 @@ def find_knowledge_gaps(store: GraphStore) -> dict[str, list[dict]]:
     for e in edges:
         degree[e.source_qualified] += 1
         degree[e.target_qualified] += 1
-        if e.kind == "TESTED_BY":
+        if e.kind == EdgeKind.TESTED_BY:
             tested_nodes.add(e.source_qualified)
 
     # 1. Isolated nodes (degree <= 1, not File)
@@ -285,12 +286,12 @@ def find_surprising_connections(
             reasons.append("peripheral-to-hub")
 
         # Cross-file-type: test <-> non-test (+0.15)
-        if src.is_test != tgt.is_test and e.kind == "CALLS":
+        if src.is_test != tgt.is_test and e.kind == EdgeKind.CALLS:
             score += 0.15
             reasons.append("cross-test-boundary")
 
         # Non-standard edge kind (+0.15)
-        if e.kind == "CALLS" and src.kind == "Type":
+        if e.kind == EdgeKind.CALLS and src.kind == "Type":
             score += 0.15
             reasons.append("unusual-edge-kind")
 
@@ -347,7 +348,7 @@ def generate_suggested_questions(
     edges = store.get_all_edges()
     tested = {
         e.source_qualified
-        for e in edges if e.kind == "TESTED_BY"
+        for e in edges if e.kind == EdgeKind.TESTED_BY
     }
     for h in hubs:
         if h["qualified_name"] not in tested:

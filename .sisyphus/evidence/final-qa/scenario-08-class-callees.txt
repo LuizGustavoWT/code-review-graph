@@ -1,0 +1,4 @@
+Target: /tmp/crg_qa_p2e81qom/repo/Sample.cs::IRepository
+Result keys: ['status', 'summary']
+Nodes count: 0
+PASS: class_callees_of query executed

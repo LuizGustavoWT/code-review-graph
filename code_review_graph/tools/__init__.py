@@ -53,6 +53,7 @@ from ._common import (
 
 # -- analysis_tools ---------------------------------------------------------
 from .analysis_tools import (
+    dependency_matrix,
     get_bridge_nodes_func,
     get_hub_nodes_func,
     get_knowledge_gaps_func,
@@ -142,6 +143,7 @@ __all__ = [
     "get_affected_flows_func",
     "get_review_context",
     # analysis_tools
+    "dependency_matrix",
     "get_bridge_nodes_func",
     "get_hub_nodes_func",
     "get_knowledge_gaps_func",

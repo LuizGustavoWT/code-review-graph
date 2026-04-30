@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from .constants import SECURITY_KEYWORDS as _SECURITY_KEYWORDS
+from .constants import EdgeKind
 from .flows import get_affected_flows
 from .graph import GraphNode, GraphStore, _sanitize_name, node_to_dict
 
@@ -236,7 +237,7 @@ def compute_risk_score(store: GraphStore, node: GraphNode) -> float:
 
     # --- Community crossing (cap 0.15) ---
     callers = store.get_edges_by_target(node.qualified_name)
-    caller_edges = [e for e in callers if e.kind == "CALLS"]
+    caller_edges = [e for e in callers if e.kind == EdgeKind.CALLS]
 
     cross_community = 0
     node_cid = store.get_node_community_id(node.id)
@@ -334,7 +335,7 @@ def analyze_changes(
         if node.is_test:
             continue
         tested = store.get_edges_by_target(node.qualified_name)
-        if not any(e.kind == "TESTED_BY" for e in tested):
+        if not any(e.kind == EdgeKind.TESTED_BY for e in tested):
             test_gaps.append({
                 "name": _sanitize_name(node.name),
                 "qualified_name": _sanitize_name(node.qualified_name),
