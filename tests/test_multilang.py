@@ -1904,7 +1904,10 @@ class TestRescriptCrossModuleResolver:
         _, result = self._build(tmp_path)
         stats = result["rescript_resolution"]
         assert stats["files_indexed"] == 4
-        assert stats["calls_resolved"] >= 3
+        # resolve_bare_call_targets now resolves the bare `format` call before
+        # the ReScript resolver runs, so only the 2 LogicUtils.safeParse calls
+        # remain for the ReScript-specific resolver.
+        assert stats["calls_resolved"] >= 2
         assert stats["imports_resolved"] >= 2
 
     def test_resolver_is_idempotent(self, tmp_path):
