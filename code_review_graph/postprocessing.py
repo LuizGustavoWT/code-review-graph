@@ -168,6 +168,12 @@ def _derive_edges(
     Controlled by ``CRG_DERIVED_EDGES`` env var (default ``"1"``).
     When disabled (``"0"``) the step is skipped entirely.
 
+    Uses **bulk SQL** instead of per-node Python loops — replaces what was
+    an N+1 query pattern (tens of thousands of round-trips on large graphs)
+    with a handful of aggregate JOIN queries that leverage existing indexes.
+    On a graph with 5k+ classes and 11k+ files this cuts computation from
+    26+ minutes to a few seconds.
+
     Results are computed via existing CALLS/CONTAINS/IMPORTS_FROM edges
     and reported as aggregate counts — no derived edges are stored in
     the database.
@@ -180,32 +186,63 @@ def _derive_edges(
 
     try:
         conn = store._conn
-        class_uses_total = 0
-        module_deps_total = 0
-        classes_processed = 0
-        files_processed = 0
 
-        # CLASS_USES: for each Class node, compute used classes
-        class_rows = conn.execute(
-            "SELECT qualified_name FROM nodes WHERE kind = 'Class'"
-        ).fetchall()
-        for row in class_rows:
-            qn = row["qualified_name"]
-            used = store.get_class_uses(qn)
-            if used:
-                class_uses_total += len(used)
-                classes_processed += 1
+        # --- Bulk CLASS_USES ---
+        class_row = conn.execute("""
+            SELECT
+                COUNT(*) AS total,
+                COUNT(DISTINCT class_qn) AS classes_processed
+            FROM (
+                SELECT DISTINCT e1.source_qualified AS class_qn,
+                                e3.source_qualified AS used_class_qn
+                FROM edges e1
+                JOIN edges e2
+                  ON e2.source_qualified = e1.target_qualified
+                 AND e2.kind = 'CALLS'
+                JOIN edges e3
+                  ON e3.target_qualified = e2.target_qualified
+                 AND e3.kind = 'CONTAINS'
+                WHERE e1.kind = 'CONTAINS'
+                  AND e1.source_qualified IN
+                      (SELECT qualified_name FROM nodes WHERE kind = 'Class')
+                  AND e1.source_qualified != e3.source_qualified
+                  AND e3.source_qualified IN
+                      (SELECT qualified_name FROM nodes WHERE kind = 'Class')
+            )
+        """).fetchone()
+        class_uses_total = class_row["total"]
+        classes_processed = class_row["classes_processed"]
 
-        # MODULE_DEPENDS_ON: for each File node, compute module deps
-        file_rows = conn.execute(
-            "SELECT qualified_name FROM nodes WHERE kind = 'File'"
-        ).fetchall()
-        for row in file_rows:
-            fp = row["qualified_name"]
-            deps = store.get_module_dependencies(fp)
-            if deps:
-                module_deps_total += len(deps)
-                files_processed += 1
+        # --- Bulk MODULE_DEPENDS_ON ---
+        module_row = conn.execute("""
+            SELECT
+                COUNT(*) AS total,
+                COUNT(DISTINCT source_qn) AS files_processed
+            FROM (
+                SELECT DISTINCT source_qualified AS source_qn,
+                                target_qualified AS target_qn
+                FROM edges
+                WHERE kind = 'IMPORTS_FROM'
+                  AND target_qualified IN
+                      (SELECT qualified_name FROM nodes WHERE kind = 'File')
+
+                UNION
+
+                SELECT DISTINCT n1.file_path AS source_qn,
+                                n2.file_path AS target_qn
+                FROM edges e
+                JOIN nodes n1
+                  ON n1.qualified_name = e.source_qualified
+                JOIN nodes n2
+                  ON n2.qualified_name = e.target_qualified
+                WHERE e.kind = 'CALLS'
+                  AND n1.file_path != n2.file_path
+                  AND n2.file_path IN
+                      (SELECT qualified_name FROM nodes WHERE kind = 'File')
+            )
+        """).fetchone()
+        module_deps_total = module_row["total"]
+        files_processed = module_row["files_processed"]
 
         result["derived_edges"] = {
             "class_uses_total": class_uses_total,

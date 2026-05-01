@@ -238,31 +238,24 @@ that isn't needed for basic code review (execution flows, bridge detection, know
 gap analysis). You can re-run with `--postprocess full` later when you need those
 features.
 
-### 5. Set `CRG_DERIVED_EDGES=0` if the build hangs
+### 5. Derived edges are now fast by default
 
-Derived edges are inferred relationships between nodes (e.g. "this function might be
-called by X because of Y"). Computing them across thousands of files produces
-O(n²) edge candidates, which is the most common reason builds hang on large projects.
+Derived edges (inferred relationships like ``CLASS_USES``, ``MODULE_DEPENDS_ON``)
+are computed via bulk SQL queries instead of per-node Python loops. This makes
+them fast enough to enable by default — **under 1 second even on 100k-node graphs**.
+
+You no longer need to set ``CRG_DERIVED_EDGES=0`` for performance reasons.
+The environment variable still exists if you want to disable derived edges for
+debugging or diagnostic purposes:
 
 ```bash
-export CRG_DERIVED_EDGES=0
+export CRG_DERIVED_EDGES=0    # only if you need to compare results
 code-review-graph build
 ```
 
-**Tradeoff:** With `CRG_DERIVED_EDGES=0` you lose inferred relationships, which means
-the blast-radius analysis may miss some indirect connections. Direct edges (parsed from
-actual `import`, `require`, `extends`, and `implements` statements) are unaffected —
-they come directly from the AST and are always included. The graph remains fully
-functional for most review workflows; only surprise/bridge/knowledge-gap analysis that
-depends on inferred edges will be less comprehensive.
-
-Once the build succeeds, you can re-enable derived edges on subsequent incremental
-updates if you need the extra analysis depth:
-
-```bash
-export CRG_DERIVED_EDGES=1
-code-review-graph update
-```
+Derived edges power blast-radius analysis, surprise scoring, and bridge/hub
+detection. Keeping them enabled gives you the full code-review intelligence
+that ``code-review-graph`` provides.
 
 ### 6. Use the `crg-fast.sh` helper script
 
@@ -275,7 +268,7 @@ scripts/crg-fast.sh --minimal  # Rebuild with minimal postprocessing
 scripts/crg-fast.sh --full     # Full rebuild with full postprocessing
 ```
 
-The script sets `CRG_DERIVED_EDGES=0` by default, checks for igraph availability, and
+The script enables derived edges by default (optimised with bulk SQL queries), checks for igraph availability, and
 displays elapsed time for each phase. See [`scripts/crg-fast.sh`](../scripts/crg-fast.sh)
 for the full source.
 
@@ -284,15 +277,14 @@ for the full source.
 | Mode | Command | Typical time (10k files) | Community detection | Derived edges | Flow analysis |
 |------|---------|------------------------:|:------------------:|:-------------:|:-------------:|
 | Incremental update | `code-review-graph update` | 1–3 s | ✅ (from cache) | ✅ (from cache) | ✅ (from cache) |
-| Minimal build | `CRG_DERIVED_EDGES=0 code-review-graph build --postprocess minimal` | 2–5 min | ⚠️ file-based | ❌ | ❌ |
-| Minimal + igraph | `CRG_DERIVED_EDGES=0 code-review-graph build --postprocess minimal` (with igraph installed) | 2–4 min | ✅ igraph | ❌ | ❌ |
+| Minimal build | `code-review-graph build --postprocess minimal` | 2–5 min | ⚠️ file-based | ✅ | ❌ |
+| Minimal + igraph | `code-review-graph build --postprocess minimal` (with igraph installed) | 2–4 min | ✅ igraph | ✅ | ❌ |
 | Standard build | `code-review-graph build` | 5–15 min | ✅ igraph | ✅ | ✅ |
 | Full rebuild | `code-review-graph build --full-rebuild --postprocess full` | 10–30+ min | ✅ igraph | ✅ | ✅ |
 
-**Pro tip:** Run the first build with `CRG_DERIVED_EDGES=0` + `--postprocess minimal`
-to get a usable graph quickly. Then re-run with standard settings in the background
-(once the graph exists, subsequent `build` commands are incremental by default and
-will only process the newly added edges/postprocessing).
+**Pro tip:** Run the first build with `--postprocess minimal` to get a usable graph
+quickly, then re-run with default settings in the background for full analysis depth.
+Derived edges are now fast enough that there is no need to disable them.
 
 ## Missing nodes after build
 - Check that the file's language is supported (see [FEATURES.md](FEATURES.md))

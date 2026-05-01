@@ -1,8 +1,8 @@
 #!/bin/bash
 # crg-fast.sh - Optimized code-review-graph builder for large projects
 #
-# Reduces build time for projects with many files by disabling expensive
-# derived-edge computation by default and offering targeted build modes.
+# Reduces build time for projects with many files by offering targeted build
+# modes. Derived edges are enabled by default (optimized with bulk SQL queries).
 #
 # Usage:
 #   ./crg-fast.sh            # Incremental update (default, fastest)
@@ -12,8 +12,8 @@
 
 set -euo pipefail
 
-# --- Disable derived edges (major speedup for large projects) ---
-export CRG_DERIVED_EDGES=0
+# --- Derived edges enabled (optimized with bulk SQL queries) ---
+export CRG_DERIVED_EDGES=1
 
 # ------------------------------------------------------------------
 # Color support (respects NO_COLOR standard)
@@ -48,7 +48,7 @@ show_help() {
   echo ""
   echo "Environment:"
   echo "  NO_COLOR=1   Disable colored output"
-  echo "  CRG_DERIVED_EDGES  Already exported as 0 (can be overridden)"
+  echo "  CRG_DERIVED_EDGES  Derived edges enabled by default for full blast-radius analysis"
   echo ""
   echo "Notes:"
   echo "  - igraph is recommended for full mode. If missing, --full will"
