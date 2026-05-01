@@ -126,15 +126,165 @@ The graph uses SQLite with WAL mode. If you see lock errors:
 - The database auto-recovers; just retry
 - Delete `.code-review-graph/graph.db-wal` and `.code-review-graph/graph.db-shm` if corrupt
 
-## Large repositories (>10k files)
-- First build may take 30-60 seconds
-- Subsequent incremental updates are fast (<2s)
-- Add more ignore patterns to `.code-review-graphignore`:
-  ```
-  generated/**
-  vendor/**
-  *.min.js
-  ```
+## Slow builds on large projects (10,000+ files)
+
+If you have a large project (e.g. 10,000+ files) the first build can take 20–30+ minutes
+and may even appear to hang. This section covers six optimisations that reduce build time
+from hours to minutes — or, after the first build, to seconds.
+
+### 1. Install igraph for fast community detection
+
+Community detection (the Leiden algorithm that clusters related code) defaults to a
+file-based fallback when igraph is not installed. File-based grouping is substantially
+slower on large graphs.
+
+```bash
+pip install code-review-graph[communities]
+```
+
+Or install igraph explicitly:
+
+```bash
+pip install igraph
+```
+
+Without igraph the tool still works — community detection falls back to a file-based
+grouping heuristic that is less precise *and* slower. Installing igraph improves both
+speed and quality.
+
+### 2. Create a `.code-review-graphignore` file
+
+A `.code-review-graphignore` file tells the parser which files and directories to skip,
+reducing the total file count the graph needs to process. This is the single most
+effective optimisation for projects with heavy dependency folders, generated code, or
+large static assets.
+
+Copy the example file to your project root:
+
+```bash
+cp .code-review-graphignore.example .code-review-graphignore
+```
+
+Then customise the patterns for your project. Typical exclusions:
+
+```
+# Dependencies (every language)
+vendor/**
+node_modules/**
+.bundle/**
+
+# Build artifacts
+build/**
+dist/**
+var/cache/**
+
+# Minified / bundled files
+*.min.js
+*.min.css
+
+# Generated code
+*.generated.php
+*.generated.js
+
+# Large static assets (not structurally meaningful)
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.svg
+
+# Database dumps
+*.sql
+*.sqlite
+```
+
+See the full annotated example at [`.code-review-graphignore.example`](../.code-review-graphignore.example)
+for patterns organised by language and framework (PHP, Node.js, Laravel, Symfony, Terraform, etc.).
+
+**Important:** In git repos, `git ls-files` already filters out gitignored files, so
+`.code-review-graphignore` is only needed for files that *are* tracked by git but should
+still be excluded from the graph (e.g. generated code, large assets, cache files that
+happen to be versioned).
+
+### 3. Use incremental updates (`update` instead of `build`)
+
+After the first full `build`, subsequent graph updates should use `update` instead of
+`build`:
+
+```bash
+code-review-graph update   # re-parses only changed files
+```
+
+`update` diffs the working tree against the stored graph state (via SHA-256 content
+hashes) and re-parses only files whose content changed. On a 10,000-file project where
+only a handful of files were edited, this completes in 1–3 seconds.
+
+**Do not** run `build --full-rebuild` or delete `.code-review-graph/` unless you have
+a specific reason — the first build is always the slowest. Subsequent incremental
+updates are the fast path.
+
+### 4. Use `--postprocess minimal` for faster builds
+
+The build pipeline includes a postprocessing phase that computes derived data
+(flow detection, cross-file relationships, centrality metrics). You can skip the
+expensive parts with `--postprocess minimal`:
+
+```bash
+code-review-graph build --postprocess minimal
+```
+
+This still produces a fully functional graph — it just omits heavyweight analysis
+that isn't needed for basic code review (execution flows, bridge detection, knowledge
+gap analysis). You can re-run with `--postprocess full` later when you need those
+features.
+
+### 5. Derived edges are now fast by default
+
+Derived edges (inferred relationships like ``CLASS_USES``, ``MODULE_DEPENDS_ON``)
+are computed via bulk SQL queries instead of per-node Python loops. This makes
+them fast enough to enable by default — **under 1 second even on 100k-node graphs**.
+
+You no longer need to set ``CRG_DERIVED_EDGES=0`` for performance reasons.
+The environment variable still exists if you want to disable derived edges for
+debugging or diagnostic purposes:
+
+```bash
+export CRG_DERIVED_EDGES=0    # only if you need to compare results
+code-review-graph build
+```
+
+Derived edges power blast-radius analysis, surprise scoring, and bridge/hub
+detection. Keeping them enabled gives you the full code-review intelligence
+that ``code-review-graph`` provides.
+
+### 6. Use the `crg-fast.sh` helper script
+
+The repository includes a convenience script that wraps all of the above optimisations
+into a single command:
+
+```bash
+scripts/crg-fast.sh            # Incremental update (fastest)
+scripts/crg-fast.sh --minimal  # Rebuild with minimal postprocessing
+scripts/crg-fast.sh --full     # Full rebuild with full postprocessing
+```
+
+The script enables derived edges by default (optimised with bulk SQL queries), checks for igraph availability, and
+displays elapsed time for each phase. See [`scripts/crg-fast.sh`](../scripts/crg-fast.sh)
+for the full source.
+
+### Quick reference: build modes compared
+
+| Mode | Command | Typical time (10k files) | Community detection | Derived edges | Flow analysis |
+|------|---------|------------------------:|:------------------:|:-------------:|:-------------:|
+| Incremental update | `code-review-graph update` | 1–3 s | ✅ (from cache) | ✅ (from cache) | ✅ (from cache) |
+| Minimal build | `code-review-graph build --postprocess minimal` | 2–5 min | ⚠️ file-based | ✅ | ❌ |
+| Minimal + igraph | `code-review-graph build --postprocess minimal` (with igraph installed) | 2–4 min | ✅ igraph | ✅ | ❌ |
+| Standard build | `code-review-graph build` | 5–15 min | ✅ igraph | ✅ | ✅ |
+| Full rebuild | `code-review-graph build --full-rebuild --postprocess full` | 10–30+ min | ✅ igraph | ✅ | ✅ |
+
+**Pro tip:** Run the first build with `--postprocess minimal` to get a usable graph
+quickly, then re-run with default settings in the background for full analysis depth.
+Derived edges are now fast enough that there is no need to disable them.
 
 ## Missing nodes after build
 - Check that the file's language is supported (see [FEATURES.md](FEATURES.md))
