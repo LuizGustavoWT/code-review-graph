@@ -817,7 +817,9 @@ def full_build(
             if i % 50 == 0 or i == file_count:
                 logger.info("Progress: %d/%d files parsed", i, file_count)
     else:
-        # Parallel parsing — store calls remain serial (SQLite single-writer)
+        # Parallel parsing — batch store calls to reduce transaction overhead
+        BATCH_SIZE = 500
+        batch: list[tuple[str, list, list, str]] = []
         args_list = [(rel_path, str(repo_root)) for rel_path in files]
         with concurrent.futures.ProcessPoolExecutor(
             max_workers=_MAX_PARSE_WORKERS,
@@ -830,17 +832,19 @@ def full_build(
                     logger.warning("Error parsing %s: %s", rel_path, error)
                     errors.append({"file": rel_path, "error": error})
                     continue
-                full_path = repo_root / rel_path
-                store.store_file_nodes_edges(
-                    str(full_path),
-                    nodes,
-                    edges,
-                    fhash,
-                )
+                full_path = str(repo_root / rel_path)
+                batch.append((full_path, nodes, edges, fhash))
+                if len(batch) >= BATCH_SIZE:
+                    store.store_file_batch(batch)
+                    batch = []
                 total_nodes += len(nodes)
                 total_edges += len(edges)
                 if i % 200 == 0 or i == file_count:
                     logger.info("Progress: %d/%d files parsed", i, file_count)
+
+        # Flush remaining batch
+        if batch:
+            store.store_file_batch(batch)
 
     store.set_metadata("last_updated", time.strftime("%Y-%m-%dT%H:%M:%S"))
     store.set_metadata("last_build_type", "full")
@@ -960,6 +964,8 @@ def incremental_update(
                 logger.warning("Error parsing %s: %s", rel_path, e)
                 errors.append({"file": rel_path, "error": str(e)})
     else:
+        BATCH_SIZE = 500
+        batch: list[tuple[str, list, list, str]] = []
         args_list = [(rel_path, str(repo_root)) for rel_path in to_parse]
         with concurrent.futures.ProcessPoolExecutor(
             max_workers=_MAX_PARSE_WORKERS,
@@ -973,14 +979,15 @@ def incremental_update(
                     logger.warning("Error parsing %s: %s", rel_path, error)
                     errors.append({"file": rel_path, "error": error})
                     continue
-                store.store_file_nodes_edges(
-                    str(repo_root / rel_path),
-                    nodes,
-                    edges,
-                    fhash,
-                )
+                batch.append((str(repo_root / rel_path), nodes, edges, fhash))
+                if len(batch) >= BATCH_SIZE:
+                    store.store_file_batch(batch)
+                    batch = []
                 total_nodes += len(nodes)
                 total_edges += len(edges)
+
+        if batch:
+            store.store_file_batch(batch)
 
     store.set_metadata("last_updated", time.strftime("%Y-%m-%dT%H:%M:%S"))
     store.set_metadata("last_build_type", "incremental")
